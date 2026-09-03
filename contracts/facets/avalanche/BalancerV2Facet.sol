@@ -17,7 +17,7 @@ import "../../interfaces/balancer-v2/IBalancerPseudoMinter.sol";
 import "../../interfaces/facets/avalanche/IBalancerV2Facet.sol";
 
 //This path is updated during deployment
-import "../../lib/local/DeploymentConstants.sol";
+import "../../lib/DeploymentConstants.sol";
 
 contract BalancerV2Facet is ReentrancyGuardKeccak, DiamondMethodsAccess, PrimeAccountModifiers, IBalancerV2Facet {
     using TransferHelper for address;

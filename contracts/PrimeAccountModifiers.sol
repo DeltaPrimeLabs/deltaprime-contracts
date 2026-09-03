@@ -3,7 +3,7 @@
 
 import {DiamondStorageLib} from "./lib/DiamondStorageLib.sol";
 import {ISmartLoanLiquidationFacet} from "./interfaces/facets/ISmartLoanLiquidationFacet.sol";
-import "./lib/local/DeploymentConstants.sol";
+import "./lib/DeploymentConstants.sol";
 import {DiamondSolvencyMethodsAccess} from "./lib/DiamondSolvencyMethodsAccess.sol";
 
 pragma solidity 0.8.17;
@@ -30,6 +30,7 @@ abstract contract PrimeAccountModifiers is DiamondSolvencyMethodsAccess {
         if (isWhitelistedLiquidator) {
             DiamondStorageLib.LiquidationSnapshotStorage storage ls = DiamondStorageLib.liquidationSnapshotStorage();
             require(ls.lastInsolventTimestamp > 0, "No insolvency snapshot - call snapshotInsolvency first");
+            require(block.timestamp - ls.lastInsolventTimestamp < DiamondStorageLib.INSOLVENCY_SNAPSHOT_VALIDITY, "Insolvency snapshot expired - take a new one");
         } else{
             DiamondStorageLib.enforceIsContractOwner();
         }
@@ -51,6 +52,7 @@ abstract contract PrimeAccountModifiers is DiamondSolvencyMethodsAccess {
         if (isWhitelistedLiquidator) {
             DiamondStorageLib.LiquidationSnapshotStorage storage ls = DiamondStorageLib.liquidationSnapshotStorage();
             require(ls.lastInsolventTimestamp > 0, "No insolvency snapshot - call snapshotInsolvency first");
+            require(block.timestamp - ls.lastInsolventTimestamp < DiamondStorageLib.INSOLVENCY_SNAPSHOT_VALIDITY, "Insolvency snapshot expired - take a new one");
         } else{
             DiamondStorageLib.enforceIsContractOwner();
         }
@@ -123,7 +125,11 @@ abstract contract PrimeAccountModifiers is DiamondSolvencyMethodsAccess {
     modifier notInLiquidation() {
         _;
         DiamondStorageLib.LiquidationSnapshotStorage storage lss = DiamondStorageLib.liquidationSnapshotStorage();
-        require(lss.lastInsolventTimestamp == 0, "Account is being liquidated");
+        require(
+            lss.lastInsolventTimestamp == 0 ||
+            block.timestamp - lss.lastInsolventTimestamp >= DiamondStorageLib.INSOLVENCY_SNAPSHOT_VALIDITY,
+            "Account is being liquidated"
+        );
     }
 
     /**

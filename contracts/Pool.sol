@@ -12,7 +12,7 @@ import "@redstone-finance/evm-connector/contracts/core/ProxyConnector.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
 import "./interfaces/IIndex.sol";
 import "./interfaces/ITokenManager.sol";
-import "./interfaces/IVPrimeController.sol";
+import "./lib/DeploymentConstants.sol";
 import "./interfaces/IRatesCalculator.sol";
 import "./interfaces/IBorrowersRegistry.sol";
 import "./interfaces/IPoolRewarder.sol";
@@ -114,7 +114,6 @@ contract Pool is PendingOwnableUpgradeable, ReentrancyGuardUpgradeable, IERC20, 
 
         emit DepositLocked(msg.sender, amount, lockTime, block.timestamp + lockTime);
 
-        notifyVPrimeController(msg.sender);
     }
 
 
@@ -151,9 +150,7 @@ contract Pool is PendingOwnableUpgradeable, ReentrancyGuardUpgradeable, IERC20, 
 
     /**
      * @notice Calculates and returns the fully vested locked balance for a given account.
-     * @dev The fully vested locked balance is used in the governance mechanism of the system, specifically for the allocation of vPrime tokens.
-     * The method calculates the fully vested locked balance by iterating over all the locks of the account and summing up the amounts of those locks that are still active (i.e., their `unlockTime` is greater than the current block timestamp). However, the amount of each lock is scaled by the ratio of its `lockTime` to the `MAX_LOCK_TIME` (3 years). This means that the longer the lock time, the larger the contribution of the lock to the fully vested locked balance.
-     * The fully vested locked balance is used to calculate the maximum vPrime allocation for a user. Users accrue vPrime over a period of 3 years, from 0 to the maximum vPrime based on their 10-1 pairs of pool-deposit and sPrime. Locking pool deposits and sPrime immediately vests the vPrime.
+     * @dev The method calculates the fully vested locked balance by iterating over all the locks of the account and summing up the amounts of those locks that are still active (i.e., their `unlockTime` is greater than the current block timestamp). However, the amount of each lock is scaled by the ratio of its `lockTime` to the `MAX_LOCK_TIME` (3 years). This means that the longer the lock time, the larger the contribution of the lock to the fully vested locked balance.
      * @param account The address of the account for which to calculate the fully vested locked balance.
      * @return fullyVestedBalance The fully vested locked balance of the provided account.
      */
@@ -168,13 +165,6 @@ contract Pool is PendingOwnableUpgradeable, ReentrancyGuardUpgradeable, IERC20, 
 
     function setTokenManager(ITokenManager _tokenManager) public onlyOwner {
         tokenManager = _tokenManager;
-    }
-
-    function getVPrimeControllerAddress() public view returns (address) {
-        if(address(tokenManager) != address(0)) {
-            return tokenManager.getVPrimeControllerAddress();
-        }
-        return address(0);
     }
 
 
@@ -332,7 +322,6 @@ contract Pool is PendingOwnableUpgradeable, ReentrancyGuardUpgradeable, IERC20, 
 
         emit Transfer(account, recipient, amount);
 
-        notifyVPrimeController(msg.sender);
 
         return true;
     }
@@ -374,6 +363,17 @@ contract Pool is PendingOwnableUpgradeable, ReentrancyGuardUpgradeable, IERC20, 
     function transferFrom(address sender, address recipient, uint256 amount) external override nonReentrant returns (bool) {
         if(_allowed[sender][msg.sender] < amount) revert InsufficientAllowance(amount, _allowed[sender][msg.sender]);
 
+        // Pool-held shares are the total-supply accumulator, not anyone's
+        // balance, so the pool must never be a party to a transfer. Every other position
+        // already enforces this (both recipient checks below, and the `_of != address(this)`
+        // require in depositOnBehalf); the sender position was the one gap, and it let
+        // _accumulateDepositInterest(address(this)) run — where _mint and the subsequent
+        // `_deposited[address(this)] = balanceOf(address(this))` refresh hit the SAME slot
+        // and apply the index growth twice, minting unbacked totalSupply. Nothing legitimate
+        // is rejected: _allowed[address(this)][*] is always zero because the pool never calls
+        // approve on itself, so any amount > 0 already failed the allowance check above.
+        if(sender == address(this)) revert TransferFromPoolAddress();
+
         if(recipient == address(0)) revert TransferToZeroAddress();
         if(recipient == address(this)) revert TransferToPoolAddress();
 
@@ -399,7 +399,6 @@ contract Pool is PendingOwnableUpgradeable, ReentrancyGuardUpgradeable, IERC20, 
 
         emit Transfer(sender, recipient, amount);
 
-        notifyVPrimeController(sender);
 
         return true;
     }
@@ -502,9 +501,15 @@ contract Pool is PendingOwnableUpgradeable, ReentrancyGuardUpgradeable, IERC20, 
         return Math.min(requestedAmount, getNotLockedBalance(msg.sender, totalIntentAmount));
     }
 
-    // IMPORTANT: Override the hardcoded address prior to deplyoment. Setting the address in the code ensures that only 24h timelock (TUP admin) can change it.
+    /**
+     * @dev The DepositSwap contract allowed to call withdrawInstant(), fixed at compile time per
+     *      chain (DeploymentChainConfig.DEPOSIT_SWAP, regenerated by select-chain-config.js).
+     *      Granting the withdrawal-queue bypass to a different address therefore requires a Pool
+     *      implementation upgrade, i.e. the TUP admin timelock. Revocation is separate and
+     *      immediate — see the TokenManager check in withdrawInstant().
+     */
     function getDepositSwapAddress() internal virtual view returns (address) {
-        return 0x70deaA9C41cd696D22a075FD6994F498b56AC55b;
+        return DeploymentConstants.getDepositSwapAddress();
     }
 
     /**
@@ -514,6 +519,13 @@ contract Pool is PendingOwnableUpgradeable, ReentrancyGuardUpgradeable, IERC20, 
     function withdrawInstant(uint256 _amount) external nonReentrant {
         address DEPOSIT_SWAP_CONTRACT = getDepositSwapAddress();
         require(msg.sender == DEPOSIT_SWAP_CONTRACT);
+
+        // Instant kill-switch: the TokenManager owner can revoke the bypass without waiting for a
+        // Pool upgrade. It can only revoke — an address the TokenManager whitelists is still
+        // rejected above unless it is also the compiled-in one.
+        ITokenManager _tokenManager = tokenManager;
+        require(address(_tokenManager) != address(0), "TokenManager not set");
+        require(_tokenManager.isDepositSwapWhitelisted(DEPOSIT_SWAP_CONTRACT), "DepositSwap disabled");
 
         _accumulateDepositInterest(msg.sender);
         _amount = Math.min(_amount, _deposited[msg.sender]);
@@ -531,7 +543,6 @@ contract Pool is PendingOwnableUpgradeable, ReentrancyGuardUpgradeable, IERC20, 
 
         _updateRates();
 
-        notifyVPrimeController(msg.sender);
 
         _transferFromPool(msg.sender, _amount);
 
@@ -575,7 +586,6 @@ contract Pool is PendingOwnableUpgradeable, ReentrancyGuardUpgradeable, IERC20, 
 
         _updateRates();
 
-        notifyVPrimeController(msg.sender);
 
         if (address(poolRewarder) != address(0)) {
             poolRewarder.withdrawFor(finalAmount, msg.sender);
@@ -619,28 +629,20 @@ contract Pool is PendingOwnableUpgradeable, ReentrancyGuardUpgradeable, IERC20, 
         _transferToPool(msg.sender, amount);
 
         borrowed[msg.sender] -= amount;
-        borrowed[address(this)] -= amount;
+        // The aggregate leg is re-derived (and re-floored) by
+        // _accumulateBorrowingInterest on every borrow/repay by ANY account, while a passive
+        // borrower's leg is scaled up in a single hop when it is finally read. Compounded
+        // truncation therefore leaves borrowed[address(this)] a few wei BELOW the debt of a
+        // pool's dominant borrower, and this unguarded decrement then underflows — reverting
+        // every liquidation of that account. `amount` is already bounded by the guard above,
+        // so clamping here only ever absorbs the accumulated rounding drift.
+        borrowed[address(this)] -= Math.min(amount, borrowed[address(this)]);
 
         _updateRates();
 
         emit Repayment(msg.sender, amount, block.timestamp);
     }
 
-    function notifyVPrimeController(address account) internal {
-        address vPrimeControllerAddress = getVPrimeControllerAddress();
-        if(vPrimeControllerAddress != address(0)){
-            if(containsOracleCalldata()) {
-                proxyCalldata(
-                    vPrimeControllerAddress,
-                    abi.encodeWithSignature
-                    ("updateVPrimeSnapshot(address)", account),
-                    false
-                );
-            } else {
-                IVPrimeController(vPrimeControllerAddress).flagUserForParameterUpdate(account);
-            }
-        }
-    }
 
     function _removeExpiredIntents(address user) internal {
         WithdrawalIntent[] storage intents = withdrawalIntents[user];
@@ -782,19 +784,6 @@ contract Pool is PendingOwnableUpgradeable, ReentrancyGuardUpgradeable, IERC20, 
             ];
     }
 
-    function containsOracleCalldata() public view returns (bool) {
-        // Checking if the calldata ends with the RedStone marker
-        bool hasValidRedstoneMarker;
-        assembly {
-            let calldataLast32Bytes := calldataload(sub(calldatasize(), STANDARD_SLOT_BS))
-            hasValidRedstoneMarker := eq(
-                REDSTONE_MARKER_MASK,
-                and(calldataLast32Bytes, REDSTONE_MARKER_MASK)
-            )
-        }
-        return hasValidRedstoneMarker;
-    }
-
     /**
      * Recovers the surplus funds resultant from difference between deposit and borrowing rates
      **/
@@ -838,7 +827,20 @@ contract Pool is PendingOwnableUpgradeable, ReentrancyGuardUpgradeable, IERC20, 
         borrowIndex.setRate(ratesCalculator.calculateBorrowingRate(_totalBorrowed, _totalSupply));
     }
 
+    /// @dev INVARIANT: `user` is never address(this). The pool's own accumulator is
+    ///      refreshed below as a side effect of accruing for a real depositor; passing the
+    ///      pool itself makes _mint and that refresh write the same slot and applies the
+    ///      index growth twice. Every caller enforces this — see the recipient
+    ///      guards in transfer/transferFrom, the sender guard in transferFrom, and the
+    ///      `_of != address(this)` require in depositOnBehalf.
     function _accumulateDepositInterest(address user) internal {
+        // Enforce the invariant the comment above states, rather
+        // than relying on every present and future call site to honour it. With user ==
+        // address(this) the _mint below and the _deposited[address(this)] refresh that
+        // follows it write the same slot, applying the index growth twice and minting
+        // totalSupply that nothing backs.
+        require(user != address(this), "Cannot accrue interest for the pool itself");
+
         uint256 interest = balanceOf(user) - _deposited[user];
 
         _mint(user, interest);
@@ -1009,6 +1011,8 @@ contract Pool is PendingOwnableUpgradeable, ReentrancyGuardUpgradeable, IERC20, 
 
     //  ERC20: cannot transfer to the pool address
     error TransferToPoolAddress();
+
+    error TransferFromPoolAddress();
 
     //  ERC20: transfer amount (`amount`) exceeds balance (`balance`)
     /// @param amount transfer amount

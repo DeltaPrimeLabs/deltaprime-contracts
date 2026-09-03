@@ -103,6 +103,15 @@ abstract contract GlvFacet is ReentrancyGuardKeccak, PrimeAccountModifiers, GmxV
         _updateGlvPositionBenchmark(gmToken, pricesAndAddresses);
         DiamondStorageLib.freezeAccount(gmToken);
 
+        // Reserve pending exposure for the GLV token GMX will mint asynchronously, mirroring
+        // GmxV2Facet._deposit. The GLV deposit execution + cancellation callbacks already clear
+        // this pending entry through the shared _handleDeposit* cleanup.
+        tokenManager.increasePendingExposure(
+            tokenManager.tokenAddressToSymbol(gmToken),
+            address(this),
+            (minGlvAmount * 1e18) / 10 ** IERC20Metadata(gmToken).decimals()
+        );
+
         _syncExposure(tokenManager, gmToken);
 
         _syncExposure(tokenManager, depositedToken);
@@ -177,7 +186,23 @@ abstract contract GlvFacet is ReentrancyGuardKeccak, PrimeAccountModifiers, GmxV
 
         _updateGlvPositionBenchmark(gmToken, pricesAndAddresses);
         (address longToken, address shortToken) = _getLongAndShortTokens(gmToken);
-        
+
+        // Reserve pending exposure for the long/short tokens GMX will deliver asynchronously,
+        // mirroring GmxV2Facet._withdraw. Without this an over-cap GLV withdrawal passes
+        // initiation and the settlement callback's exposure sync reverts, leaving the account
+        // frozen. The GLV execution + cancellation callbacks already clear these pending entries
+        // through the shared _handleWithdrawal* cleanup.
+        tokenManager.increasePendingExposure(
+            tokenManager.tokenAddressToSymbol(longToken),
+            address(this),
+            (minLongTokenAmount * 1e18) / 10 ** IERC20Metadata(longToken).decimals()
+        );
+        tokenManager.increasePendingExposure(
+            tokenManager.tokenAddressToSymbol(shortToken),
+            address(this),
+            (minShortTokenAmount * 1e18) / 10 ** IERC20Metadata(shortToken).decimals()
+        );
+
         _syncExposure(tokenManager, longToken);
         _syncExposure(tokenManager, shortToken);
 
@@ -197,24 +222,6 @@ abstract contract GlvFacet is ReentrancyGuardKeccak, PrimeAccountModifiers, GmxV
 
     // ============ FEE SPECIFIC FUNCTIONS ============
 
-    function initiateGlvFeesBenchMark(address glvToken) external onlyWhitelistedLiquidators nonReentrant {
-        UnifiedGmxTokenPricesAndAddresses memory pricesAndAddresses = _getUnifiedGlvTokenPricesAndAddresses(glvToken);
-        uint256 glvBalance = IERC20(glvToken).balanceOf(address(this));
-        (uint256 longTokenAmount, uint256 shortTokenAmount) = _getGlvLongAndShortTokenAmounts( glvToken, glvBalance);
-        GmxPositionDetails memory positionDetails = GmxPositionDetails({
-            underlyingLongTokenAmount: longTokenAmount,
-            underlyingShortTokenAmount: shortTokenAmount,
-            gmTokenPriceUsd: pricesAndAddresses.gmTokenPrice,
-            longTokenPriceUsd: pricesAndAddresses.longTokenPrice,
-            shortTokenPriceUsd: pricesAndAddresses.shortTokenPrice,
-            benchmarkTimeStamp: block.timestamp,
-            longTokenAddress: pricesAndAddresses.longToken,
-            shortTokenAddress: pricesAndAddresses.shortToken
-        });
-        _createOrUpdatePositionBenchmark(glvToken, positionDetails);
-        
-        emit BenchmarkInitiated(glvToken, msg.sender, pricesAndAddresses.isPlusMarket, block.timestamp);
-    }
 
     function getGlvPerformance(address glvToken) external view returns (uint256) {
         UnifiedGmxTokenPricesAndAddresses memory pricesAndAddresses = _getUnifiedGlvTokenPricesAndAddresses(glvToken);

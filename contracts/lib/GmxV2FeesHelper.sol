@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity 0.8.17;
 
-import "./local/DeploymentConstants.sol";
+import "./DeploymentConstants.sol";
 import "./DiamondStorageLib.sol";
 import "../interfaces/ITokenManager.sol";
 import {IGmxReader} from "../interfaces/gmx-v2/IGmxReader.sol";
@@ -207,18 +207,49 @@ abstract contract GmxV2FeesHelper is DiamondMethodsAccess, GmxGlvUnifiedHelper {
         GmxPositionDetails memory positionDetails,
         uint256 fundedGmAmount
     ) internal {
+        // Nothing funded, nothing to benchmark. fund() clamps its amount to the caller's balance
+        // and does not reject zero, so without this a fund() of a token the caller holds none of
+        // would write a benchmark with zero underlying legs. _calculateFeeData derives the cost
+        // basis from those legs, and _sweepFees only early-returns on a MISSING benchmark, not a
+        // zero-valued one — so an account already holding that GM from another route would have
+        // its entire position read as appreciation and charged the performance fee on principal.
+        // Leaving the benchmark absent is both correct and safe: _sweepFees skips it, and the
+        // next real fund or GMX deposit creates a properly sized basis.
+        if (fundedGmAmount == 0) {
+            return;
+        }
+
         DiamondStorageLib.GmxPositionBenchmark memory existing = DiamondStorageLib.getGmxPositionBenchmark(gmMarket);
         uint256 addedValueUsd = (fundedGmAmount * positionDetails.gmTokenPriceUsd) / 1e8;
 
         if (!existing.exists) {
-            // First-time benchmark creation for this market. The funded amount IS the entire
-            // position, so creating a fresh benchmark sized to that amount is correct.
+            // First-time benchmark creation for this market. This branch only became reachable
+            // for GM markets once fund() stopped reverting with Panic(0x12) on a missing
+            // benchmark, and its original assumption — "the funded amount IS the entire
+            // position" — does not survive that. GM market tokens are ordinary ERC20s and benchmarks are never deleted
+            // (setGmxPositionBenchmark is the only writer), so `!exists` means "never tracked",
+            // which includes a position that arrived by direct transfer. Sizing the first
+            // benchmark from the funded amount alone would leave the pre-existing balance
+            // untracked, and _calculateFeeData would then read almost the whole untracked
+            // position as appreciation and charge the performance fee on principal.
+            //
+            // Size from the account's actual post-transfer balance instead, scaling the
+            // underlying legs by the same ratio so the benchmark stays internally consistent.
+            uint256 gmBalance = IERC20Metadata(gmMarket).balanceOf(address(this));
+            uint256 longAmount = positionDetails.underlyingLongTokenAmount;
+            uint256 shortAmount = positionDetails.underlyingShortTokenAmount;
+            if (gmBalance > fundedGmAmount) {
+                addedValueUsd = (gmBalance * positionDetails.gmTokenPriceUsd) / 1e8;
+                longAmount = (longAmount * gmBalance) / fundedGmAmount;
+                shortAmount = (shortAmount * gmBalance) / fundedGmAmount;
+            }
+
             DiamondStorageLib.setGmxPositionBenchmark(
                 DiamondStorageLib.GmxPositionBenchmarkParams({
                     market: gmMarket,
                     benchmarkValueUsd: addedValueUsd,
-                    longTokenAmount: positionDetails.underlyingLongTokenAmount,
-                    shortTokenAmount: positionDetails.underlyingShortTokenAmount,
+                    longTokenAmount: longAmount,
+                    shortTokenAmount: shortAmount,
                     longToken: positionDetails.longTokenAddress,
                     shortToken: positionDetails.shortTokenAddress,
                     timestamp: block.timestamp,
@@ -230,8 +261,8 @@ abstract contract GmxV2FeesHelper is DiamondMethodsAccess, GmxGlvUnifiedHelper {
             emit BenchmarkCreated(
                 gmMarket,
                 addedValueUsd,
-                positionDetails.underlyingLongTokenAmount,
-                positionDetails.underlyingShortTokenAmount,
+                longAmount,
+                shortAmount,
                 positionDetails.longTokenAddress,
                 positionDetails.shortTokenAddress,
                 positionDetails.gmTokenPriceUsd,

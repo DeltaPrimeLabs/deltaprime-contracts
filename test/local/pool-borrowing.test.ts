@@ -71,15 +71,6 @@ describe('Pool with variable utilisation interest rates', () => {
             await sut.connect(depositor).deposit(toWei("2.0"));
         });
 
-        it("should check for redstone calldata", async () => {
-            console.log('Checking non-wrapped contract');
-            let containsRedstoneCalldata = await sut.containsOracleCalldata();
-            expect(containsRedstoneCalldata).to.be.false;
-            console.log('Checking wrapped contract');
-            containsRedstoneCalldata = await sutWrapped.containsOracleCalldata();
-            expect(containsRedstoneCalldata).to.be.true;
-        });
-
         it("should borrow", async () => {
             await sut.borrow(toWei("1.0"));
             expect(await mockToken.balanceOf(sut.address)).to.be.equal(toWei("1", "ether"));

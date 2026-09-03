@@ -31,7 +31,8 @@ import {
     toBytes32,
     convertTokenPricesMapToMockPrices,
     recompileConstantsFile,
-    deployAllFacets
+    deployAllFacets,
+    whitelistParaSwapExecutors
 } from "../../_helpers";
 import {
     MockPoolDepositSwap,
@@ -175,6 +176,8 @@ describe('Deposit Swap Mock', () => {
         supportedAssets = convertAssetsListToSupportedAssets(assetsList, {});
         await tokenManager.connect(owner).initialize(supportedAssets, lendingPools);
         await tokenManager.connect(owner).setFactoryAddress(smartLoansFactory.address);
+        // ParaSwap executors are TokenManager-whitelisted (no longer hardcoded in ParaSwapHelper)
+        await whitelistParaSwapExecutors(tokenManager, owner);
 
         // Deploy deposit swap contract
         // 1. Deploy the contract using your helper, but pass an empty array for constructor args

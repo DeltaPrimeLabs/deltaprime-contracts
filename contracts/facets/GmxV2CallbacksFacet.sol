@@ -25,7 +25,7 @@ import "../interfaces/gmx-v2/IGlvDepositCallbackReceiver.sol";
 import "../interfaces/gmx-v2/IGlvWithdrawalCallbackReceiver.sol";
 
 //This path is updated during deployment
-import "../lib/local/DeploymentConstants.sol";
+import "../lib/DeploymentConstants.sol";
 
 abstract contract GmxV2CallbacksFacet is IDepositCallbackReceiver, IWithdrawalCallbackReceiver, IGasFeeCallbackReceiver, IGlvDepositCallbackReceiver, IGlvWithdrawalCallbackReceiver, ReentrancyGuardKeccak, GmxV2FeesHelper, GlvHelper {
     using TransferHelper for address;
@@ -422,8 +422,30 @@ abstract contract GmxV2CallbacksFacet is IDepositCallbackReceiver, IWithdrawalCa
         // Native token transfer happens after execution
         wrapNativeToken();
 
-        _syncExposure(tokenManager, tokens.longToken);
-        _syncExposure(tokenManager, tokens.shortToken);
+        // A cancelled withdrawal refunds the GM MARKET token: GMX returns
+        // withdrawal.market()/marketTokenAmount(), not the long/short legs. _withdraw had
+        // already synced the GM to a zero balance, which removed it from ownedAssets, so
+        // without this the refunded collateral sits in the account invisible to
+        // SolvencyFacetProd and to the liquidation engine.
+        //
+        // Exposure bookkeeping mirrors initiation: _withdraw syncs ACTUAL exposure for what it
+        // spends (the GM) and RESERVES pending for what it expects (long + short), so the
+        // cancellation owes a sync on the market and a pending-clear on long/short. The two
+        // long/short syncs that used to sit here were no-ops — nothing was refunded on those
+        // legs, the account is frozen for the whole async window, and wrapNativeToken() above
+        // already syncs the wrapped-native leg itself — so they are dropped. Their PENDING
+        // clears below stay; that is what _withdraw actually booked.
+        //
+        // Note this sync CAN revert: restoring the GM raises exposure, so it reaches
+        // TokenManager's `current <= max` check. That is a real cost of correctness here, not
+        // something the change avoids — GMX swallows a failing callback, so a cap breach would
+        // leave the account frozen with the GM still unregistered, recoverable only by a
+        // whitelisted liquidator calling unfreezeAccount(). It is accepted because the GM
+        // exposure groups run far below their caps and the alternative is leaving real
+        // collateral permanently invisible to solvency. If a GM group is ever configured close
+        // to its cap, revisit this: the restore is a rollback of exposure this same account
+        // released at initiation, so it arguably should not be cap-gated at all.
+        _syncExposure(tokenManager, market);
 
         tokenManager.setPendingExposureToZero(tokenManager.tokenAddressToSymbol(tokens.longToken), account);
         tokenManager.setPendingExposureToZero(tokenManager.tokenAddressToSymbol(tokens.shortToken), account);

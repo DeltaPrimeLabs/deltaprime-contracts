@@ -12,7 +12,7 @@ import "../lib/DiamondMethodsAccess.sol";
 import "../PrimeAccountModifiers.sol";
 
 //this path is updated during deployment
-import "../lib/local/DeploymentConstants.sol";
+import "../lib/DeploymentConstants.sol";
 
 contract PrimeLeverageFacet is  IPrimeLeverageFacet,ReentrancyGuardKeccak, DiamondMethodsAccess, PrimeAccountModifiers {
     
@@ -60,7 +60,12 @@ contract PrimeLeverageFacet is  IPrimeLeverageFacet,ReentrancyGuardKeccak, Diamo
     /**
      * @dev Activates PREMIUM tier (10x leverage mode) for the user
      */
-    function stakePrimeAndActivatePremium() external onlyOwner nonReentrant {
+    // notInLiquidation: without it a BASIC-tier owner could flip to PREMIUM
+    // inside the 15-minute liquidation window and halve the liquidation fee (140 -> 70 bps
+    // of initial debt), diverting the difference from the stability pool and treasury.
+    // PREMIUM activation is meant to be a deliberate choice made while the account is
+    // healthy; ~25 other owner state-changing entry points already carry this guard.
+    function stakePrimeAndActivatePremium() external onlyOwner nonReentrant notInLiquidation {
         uint256 totalCollateral = _getTotalValue() - _getDebt();
         uint256 requiredMaxStake = getRequiredPrimeStake(LeverageTierLib.LeverageTier.PREMIUM, totalCollateral * 10); // 10x max debt
         stakePrime(requiredMaxStake);
@@ -72,7 +77,20 @@ contract PrimeLeverageFacet is  IPrimeLeverageFacet,ReentrancyGuardKeccak, Diamo
      * @dev Deactivates PREMIUM tier back to BASIC tier
      * @param withdrawStake Whether to withdraw excess staked PRIME
      */
-    function deactivatePremiumTier(bool withdrawStake) external onlyOwner nonReentrant {
+    // notInLiquidation is for consistency with stakePrimeAndActivatePremium; that direction
+    // only ever raises the fee, so it is hygiene rather than a fix.
+    //
+    // remainsSolvent is load-bearing. Downgrading does two things that cut the
+    // account's threshold-weighted value in one transaction: it drops tieredDebtCoverage from
+    // the PREMIUM value to the BASIC one across every asset, and, with withdrawStake, releases
+    // excess staked PRIME. repayPrimeDebt below settles only the PRIME staking debt, not the
+    // account's pool debt, so a leveraged account kept its full borrow position while its
+    // coverage fell — letting an owner drive themselves from solvent to insolvent in one call.
+    // There is no attacker profit (the value stays in the account and it is simply liquidated),
+    // but a downgrade from the top of the PREMIUM band could land far enough under the
+    // threshold that liquidation does not recover it, which is depositor bad debt. The owner
+    // must now deleverage first and then downgrade.
+    function deactivatePremiumTier(bool withdrawStake) external onlyOwner nonReentrant remainsSolvent notInLiquidation {
         require(DiamondStorageLib.getPrimeLeverageTier() != LeverageTierLib.LeverageTier.BASIC, "Already in BASIC tier");
 
         /// @dev gets the current debt, tries to repay it fully before deactivating

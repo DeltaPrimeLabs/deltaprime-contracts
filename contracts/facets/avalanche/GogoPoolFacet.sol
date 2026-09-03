@@ -13,7 +13,7 @@ import "../../interfaces/IWrappedNativeToken.sol";
 import "../../interfaces/IGgAvax.sol";
 
 //This path is updated during deployment
-import "../../lib/local/DeploymentConstants.sol";
+import "../../lib/DeploymentConstants.sol";
 
 contract GogoPoolFacet is ReentrancyGuardKeccak, DiamondMethodsAccess, PrimeAccountModifiers {
     using TransferHelper for address;

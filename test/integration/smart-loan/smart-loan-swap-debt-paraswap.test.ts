@@ -32,6 +32,7 @@ import {
   toWei,
   parseParaSwapRouteData,
   fromBytes32,
+  whitelistParaSwapExecutors,
 } from "../../_helpers";
 import { syncTime } from "../../_syncTime";
 import {
@@ -214,6 +215,8 @@ describe("Smart loan", () => {
         await tokenManager
           .connect(owner)
           .setFactoryAddress(smartLoansFactory.address);
+        // ParaSwap executors are TokenManager-whitelisted (no longer hardcoded in ParaSwapHelper)
+        await whitelistParaSwapExecutors(tokenManager, owner);
 
         let addressProvider = (await deployContract(
           owner,

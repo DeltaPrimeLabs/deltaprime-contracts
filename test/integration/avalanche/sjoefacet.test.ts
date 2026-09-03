@@ -24,6 +24,7 @@ import {
   PoolInitializationObject,
   recompileConstantsFile,
   parseParaSwapRouteData,
+  whitelistParaSwapExecutors,
 } from "../../_helpers";
 import { syncTime } from "../../_syncTime";
 import { WrapperBuilder } from "@redstone-finance/evm-connector";
@@ -158,6 +159,8 @@ describe("Smart loan", () => {
       await tokenManager
         .connect(owner)
         .setFactoryAddress(smartLoansFactory.address);
+      // ParaSwap executors are TokenManager-whitelisted (no longer hardcoded in ParaSwapHelper)
+      await whitelistParaSwapExecutors(tokenManager, owner);
 
       await smartLoansFactory.initialize(diamondAddress, tokenManager.address);
 

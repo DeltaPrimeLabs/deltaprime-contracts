@@ -541,6 +541,30 @@ export const deployRecoveryManager = async function (
     return recoveryManager;
 }
 
+/**
+ * ParaSwap executor addresses returned by the ParaSwap API.
+ *
+ * These used to be `address private constant EXECUTOR_n` values inside ParaSwapHelper. They now
+ * live in the TokenManager whitelist (owner-managed via whitelistParaSwapExecutors /
+ * delistParaSwapExecutors), so every test that executes a real ParaSwap route has to seed them —
+ * exactly like production does after deploying the TokenManager.
+ */
+export const PARASWAP_EXECUTORS = [
+    '0xDEF171Fe48CF0115B1d80b88dc8eAB59176FEe57',
+    '0x6A000F20005980200259B80c5102003040001068',
+    '0x006D0E0D006109F0020F3050000A713780B7B000',
+    '0x082738D007001080A00099A000004f3006152085',
+    '0xa000B020C290d000020AaC04026B5306d60050F0',
+];
+
+export const whitelistParaSwapExecutors = async function(
+    tokenManager: Contract,
+    owner: SignerWithAddress | JsonRpcSigner,
+    executors: Array<string> = PARASWAP_EXECUTORS
+) {
+    await tokenManager.connect(owner).whitelistParaSwapExecutors(executors);
+}
+
 export const deployPools = async function(
     smartLoansFactory: Contract,
     tokens: Array<PoolInitializationObject>,
@@ -962,13 +986,6 @@ export const deployAllFacets = async function (diamondAddress: any, mock: boolea
             hardhatConfig
         );
 
-        if (mock) {
-            await deployFacet("UniswapV3FacetMock", diamondAddress, ['mintLiquidityUniswapV3', 'increaseLiquidityUniswapV3', 'decreaseLiquidityUniswapV3', 'burnLiquidityUniswapV3', 'getOwnedUniswapV3TokenIds'], hardhatConfig)
-
-        } else {
-            await deployFacet("UniswapV3Facet", diamondAddress, ['mintLiquidityUniswapV3', 'increaseLiquidityUniswapV3', 'decreaseLiquidityUniswapV3', 'burnLiquidityUniswapV3', 'getOwnedUniswapV3TokenIds'], hardhatConfig)
-
-        }
     }
     if (chain == 'ARBITRUM') {
         if (mock) {

@@ -7,7 +7,6 @@ interface IPool is IERC20 {
     function getLockedBalance(address account) external view returns (uint256);
     function lockDeposit(uint256 amount, uint256 lockTime) external;
     function getFullyVestedLockedBalance(address account) external view returns (uint256);
-    function setVPrimeController(address _vPrimeController) external;
     function deposit(uint256 _amount) external;
     function depositOnBehalf(uint256 _amount, address _of) external;
     function withdraw(uint256 _amount) external;
@@ -34,7 +33,6 @@ interface IPool is IERC20 {
     function borrowIndex() external view returns (address);
     function tokenAddress() external view returns (address);
     function vestingDistributor() external view returns (address);
-    function vPrimeControllerContract() external view returns (address);
 
     /**
      * @dev emitted after the user deposits funds

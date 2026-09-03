@@ -7,12 +7,13 @@ import "@redstone-finance/evm-connector/contracts/data-services/PrimaryProdDataS
 import "../interfaces/ITokenManager.sol";
 import "../interfaces/facets/avalanche/ITraderJoeV2Facet.sol";
 import "../interfaces/IStakingPositions.sol";
+import "@openzeppelin/contracts/utils/math/Math.sol";
 import {Uint256x256Math} from "../lib/joe-v2/math/Uint256x256Math.sol";
 import {PriceHelper} from "../lib/joe-v2/PriceHelper.sol";
 import "../Pool.sol";
 
 //This path is updated during deployment
-import "../lib/local/DeploymentConstants.sol";
+import "../lib/DeploymentConstants.sol";
 
 contract HealthMeterFacetProd is PrimaryProdDataServiceConsumerBase {
     using PriceHelper for uint256;
@@ -30,6 +31,7 @@ contract HealthMeterFacetProd is PrimaryProdDataServiceConsumerBase {
         uint256 priceY;
     }
 
+    // Mirrors SolvencyFacetProd._getTotalTraderJoeV2(weighted = true); keep the two in sync.
     function _getTotalTraderJoeV2Weighted() internal view returns (uint256) {
         uint256 total;
 
@@ -66,6 +68,12 @@ contract HealthMeterFacetProd is PrimaryProdDataServiceConsumerBase {
                     price = PriceHelper.convert128x128PriceToDecimal(binInfo.pair.getPriceFromId(binInfo.id)); // how is it denominated (what precision)?
 
                     liquidity = price * binReserveX / 10 ** 18 + binReserveY;
+
+                    // Bin prices are truncated to 18 decimals and collapse to zero for bins far
+                    // enough below the active one, which would make the tokenX-denominated leg
+                    // below divide by zero. A bin priced under 1e-18 of the pair ratio holds no
+                    // meaningful value, so skip it rather than divide by its price.
+                    if (price == 0) continue;
                 }
 
 
@@ -82,7 +90,7 @@ contract HealthMeterFacetProd is PrimaryProdDataServiceConsumerBase {
                                             debtCoverageY * liquidity / 10 ** (IERC20Metadata(address(binInfo.pair.getTokenY())).decimals()) * priceInfo.priceY / 10 ** 8
                                         )
                                         .mulDivRoundDown(binInfo.pair.balanceOf(address(this), binInfo.id), 1e18)
-                                .mulDivRoundDown(1e18, binInfo.pair.totalSupply(binInfo.id));
+                                .mulDivRoundDown(1e18, Math.max(binInfo.pair.totalSupply(binInfo.id), 1));
                 }
             }
 

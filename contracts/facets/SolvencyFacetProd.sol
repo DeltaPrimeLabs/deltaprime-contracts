@@ -18,7 +18,7 @@ import {DiamondStorageLib} from "../lib/DiamondStorageLib.sol";
 import {GmxBenchmarkMath} from "../lib/GmxBenchmarkMath.sol";
 
 //This path is updated during deployment
-import "../lib/local/DeploymentConstants.sol";
+import "../lib/DeploymentConstants.sol";
 
 abstract contract SolvencyFacetProd is PrimaryProdDataServiceConsumerBase, DiamondHelper {
     using PriceHelper for uint256;
@@ -881,23 +881,37 @@ abstract contract SolvencyFacetProd is PrimaryProdDataServiceConsumerBase, Diamo
                     price = PriceHelper.convert128x128PriceToDecimal(binInfo.pair.getPriceFromId(binInfo.id));
 
                     liquidity = price * binReserveX / 10 ** 18 + binReserveY;
+
+                    // Bin prices are truncated to 18 decimals and collapse to zero for bins far
+                    // enough below the active one, which would make the tokenX-denominated leg
+                    // below divide by zero. A bin priced under 1e-18 of the pair ratio holds no
+                    // meaningful value, so skip it rather than divide by its price.
+                    if (price == 0) continue;
                 }
 
 
                 {
-                    uint256 debtCoverageX = weighted ? DeploymentConstants.getTokenManager().tieredDebtCoverage(DiamondStorageLib.getPrimeLeverageTier(),address(binInfo.pair.getTokenX())) : 1e18;
+                    // tokenX-denominated leg, factored so the shared decimals/price tail is applied
+                    // once. Division order is unchanged from the two inlined branches it replaces.
+                    uint256 valueX;
+                    {
+                        uint256 debtCoverageX = weighted ? DeploymentConstants.getTokenManager().tieredDebtCoverage(DiamondStorageLib.getPrimeLeverageTier(),address(binInfo.pair.getTokenX())) : 1e18;
+                        valueX = price > 10**24 ?
+                            debtCoverageX * liquidity / (price / 10 ** 18)
+                            :
+                            debtCoverageX * liquidity / price * 10**18;
+                    }
+                    valueX = valueX / 10 ** IERC20Metadata(address(binInfo.pair.getTokenX())).decimals() * priceInfo.priceX / 10 ** 8;
+
                     uint256 debtCoverageY = weighted ? DeploymentConstants.getTokenManager().tieredDebtCoverage(DiamondStorageLib.getPrimeLeverageTier(),address(binInfo.pair.getTokenY())) : 1e18;
 
                     total = total +
                     Math.min(
-                        price > 10**24 ?
-                            debtCoverageX * liquidity / (price / 10 ** 18) / 10 ** IERC20Metadata(address(binInfo.pair.getTokenX())).decimals() * priceInfo.priceX / 10 ** 8
-                            :
-                            debtCoverageX * liquidity / price * 10**18 / 10 ** IERC20Metadata(address(binInfo.pair.getTokenX())).decimals() * priceInfo.priceX / 10 ** 8,
+                        valueX,
                         debtCoverageY * liquidity / 10**(IERC20Metadata(address(binInfo.pair.getTokenY())).decimals()) * priceInfo.priceY / 10 ** 8
                     )
                     .mulDivRoundDown(binInfo.pair.balanceOf(address(this), binInfo.id), 1e18)
-                    .mulDivRoundDown(1e18, binInfo.pair.totalSupply(binInfo.id));
+                    .mulDivRoundDown(1e18, Math.max(binInfo.pair.totalSupply(binInfo.id), 1));
                 }
             }
 

@@ -6,7 +6,7 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 import {ITokenManager} from "../interfaces/ITokenManager.sol";
 import {IPool} from "../interfaces/IPool.sol";
 import {TransferHelper} from "@uniswap/lib/contracts/libraries/TransferHelper.sol";
-import {DeploymentConstants} from "../lib/local/DeploymentConstants.sol";
+import {DeploymentConstants} from "../lib/DeploymentConstants.sol";
 import {DiamondMethodsAccess} from "./DiamondMethodsAccess.sol";
 import {DiamondStorageLib} from "./DiamondStorageLib.sol";
 
@@ -36,13 +36,6 @@ contract ParaSwapHelper is DiamondMethodsAccess {
     ///@notice selectors for paraSwapV6 data decoding
     bytes4 private constant SWAP_EXACT_AMOUNT_IN_SELECTOR = 0xe3ead59e;
     bytes4 private constant SWAP_EXACT_AMOUNT_IN_ON_UNI_V3_SELECTOR = 0x876a02f6;
-
-    /// @notice executor addresses returned by ParaSwap API
-    address private constant EXECUTOR_1 = 0xDEF171Fe48CF0115B1d80b88dc8eAB59176FEe57;
-    address private constant EXECUTOR_2 = 0x6A000F20005980200259B80c5102003040001068;
-    address private constant EXECUTOR_3 = 0x000010036C0190E009a000d0fc3541100A07380A;
-    address private constant EXECUTOR_4 = 0x00C600b30fb0400701010F4b080409018B9006E0;
-    address private constant EXECUTOR_5 = 0xA0F408A000017007015e0F00320e470D00090a5B;
 
     // Events
     event SwapExecuted(
@@ -75,6 +68,7 @@ contract ParaSwapHelper is DiamondMethodsAccess {
     error TooMuchSold();
     error CumulativeLossExceeded(uint256 cumulativeLossDollars, uint256 maxAllowedDollars);
     error BoughtTokenHasNoDebt(bytes32 boughtSymbol);
+    error GmGlvNotSwappable(address token);
 
     struct SwapTokensDetails {
         bytes32 tokenSoldSymbol;
@@ -149,6 +143,17 @@ contract ParaSwapHelper is DiamondMethodsAccess {
         ITokenManager tokenManager = DeploymentConstants.getTokenManager();
         require(address(tokenManager) != address(0), "Invalid token manager");
 
+        // GM/GLV market tokens carry fee-aware (performance-fee benchmark) accounting that the
+        // generic swap path does not respect, and they are not routable through ParaSwap on-chain
+        // (mint/redeem-only via the GMX keeper). Reject them as either side of any swap routed
+        // through this helper: paraSwapV6, paraSwapBeforeLiquidation and swapDebtParaSwap.
+        if (tokenManager.isGmxMarketWhitelisted(_soldTokenAddress) || tokenManager.isGlvTokenWhitelisted(_soldTokenAddress)) {
+            revert GmGlvNotSwappable(_soldTokenAddress);
+        }
+        if (tokenManager.isGmxMarketWhitelisted(_boughtTokenAddress) || tokenManager.isGlvTokenWhitelisted(_boughtTokenAddress)) {
+            revert GmGlvNotSwappable(_boughtTokenAddress);
+        }
+
         bytes32 _tokenSoldSymbol = tokenManager.tokenAddressToSymbol(_soldTokenAddress);
         bytes32 _tokenBoughtSymbol = tokenManager.tokenAddressToSymbol(_boughtTokenAddress);
 
@@ -211,6 +216,7 @@ contract ParaSwapHelper is DiamondMethodsAccess {
         if (isLiquidation) {
             DiamondStorageLib.LiquidationSnapshotStorage storage ls = DiamondStorageLib.liquidationSnapshotStorage();
             require(ls.lastInsolventTimestamp > 0, "No insolvency snapshot - call snapshotInsolvency first");
+            require(block.timestamp - ls.lastInsolventTimestamp < DiamondStorageLib.INSOLVENCY_SNAPSHOT_VALIDITY, "Insolvency snapshot expired - take a new one");
 
             // Pre-liquidation swaps may only produce tokens the Prime Account owes.
             // This prevents liquidators from pivoting collateral through arbitrary assets
@@ -463,15 +469,13 @@ contract ParaSwapHelper is DiamondMethodsAccess {
 
     /**
      * @notice Check if an address is a valid ParaSwap executor
+     * @dev The executor set lives in the TokenManager (whitelisted/delisted by the owner) instead of
+     *      being hardcoded here, so ParaSwap router/executor rotations no longer require redeploying
+     *      and diamondCutting every facet that swaps.
      * @param _executorAddress Address to check
      * @return isValid Whether the address is a valid executor
      */
-    function _checkExecutorAddress(address _executorAddress) internal pure returns (bool) {
-        if (_executorAddress == EXECUTOR_3) return true; //most likely executor, checks first
-        if (_executorAddress == EXECUTOR_2) return true;
-        if (_executorAddress == EXECUTOR_4) return true;
-        if (_executorAddress == EXECUTOR_5) return true;
-        if (_executorAddress == EXECUTOR_1) return true;
-        return false;
+    function _checkExecutorAddress(address _executorAddress) internal view returns (bool) {
+        return DeploymentConstants.getTokenManager().isParaSwapExecutorWhitelisted(_executorAddress);
     }
 }

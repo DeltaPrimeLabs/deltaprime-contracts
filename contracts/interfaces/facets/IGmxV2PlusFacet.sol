@@ -53,7 +53,6 @@ interface IGmxV2PlusFacet {
         uint256 executionFee
     ) external payable;
 
-    function initiateGmxFeesBenchMarkGmxPlus(address gmToken) external;
 
     function sweepFeesAndUpdateBenchMarkGmxPlus(address gmToken) external;
 

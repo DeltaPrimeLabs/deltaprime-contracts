@@ -13,7 +13,7 @@ import "../interfaces/joe-v2/IRewarder.sol";
 import "../interfaces/ITokenManager.sol";
 
 //This path is updated during deployment
-import "../lib/local/DeploymentConstants.sol";
+import "../lib/DeploymentConstants.sol";
 import {DiamondStorageLib} from "../lib/DiamondStorageLib.sol";
 
 abstract contract TraderJoeV2Facet is ITraderJoeV2Facet, ReentrancyGuardKeccak, DiamondMethodsAccess, PrimeAccountModifiers {
@@ -155,6 +155,10 @@ abstract contract TraderJoeV2Facet is ITraderJoeV2Facet, ReentrancyGuardKeccak, 
 
         for (uint256 i; i < ids.length; ++i) {
             if (ids[i] > type(uint24).max) revert IdOutOfRange();
+            // Funding zero LB tokens is a no-op transfer that would still register the bin, letting
+            // an account track bins it holds nothing in - and those carry no value while still
+            // costing gas on every valuation. There is no legitimate reason to fund a zero amount.
+            if (amounts[i] == 0) revert ZeroFundedAmount();
         }
 
         pair.batchTransferFrom(msg.sender, address(this), ids, amounts);
@@ -407,6 +411,8 @@ abstract contract TraderJoeV2Facet is ITraderJoeV2Facet, ReentrancyGuardKeccak, 
     error TraderJoeV2NoRewardHook();
 
     error IdOutOfRange();
+
+    error ZeroFundedAmount();
 
     error PairNotTrackedInOwnedBins();
 

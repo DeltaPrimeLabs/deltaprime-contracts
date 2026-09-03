@@ -13,14 +13,13 @@ import {GlvHelper} from "../lib/GlvHelper.sol";
 import {GmxBenchmarkMath} from "../lib/GmxBenchmarkMath.sol";
 import "../PrimeAccountModifiers.sol";
 import "../interfaces/ITokenManager.sol";
-import "../interfaces/IVPrimeController.sol";
 import {IGmxReader} from "../interfaces/gmx-v2/IGmxReader.sol";
 import {IGlvReader} from "../interfaces/gmx-v2/IGlvReader.sol";
 import "./SmartLoanLiquidationFacet.sol";
 import "../interfaces/facets/IYieldYakRouter.sol";
 
 //this path is updated during deployment
-import "../lib/local/DeploymentConstants.sol";
+import "../lib/DeploymentConstants.sol";
 
 contract AssetsOperationsFacet is ReentrancyGuardKeccak, PrimeAccountModifiers, GmxV2FeesHelper, GlvHelper {
     using TransferHelper for address payable;
@@ -104,17 +103,27 @@ contract AssetsOperationsFacet is ReentrancyGuardKeccak, PrimeAccountModifiers, 
         
         if(tokenManager.isGmxMarketWhitelisted(address(token)) || tokenManager.isGlvTokenWhitelisted(address(token))) {
             DiamondStorageLib.GmxPositionBenchmark memory benchmark = DiamondStorageLib.getGmxPositionBenchmark(address(token));
+
+            // Fetch the prices for ANY whitelisted GM/GLV token, not only when a
+            // benchmark already exists. These prices are used twice — by the fee sweep below
+            // (existing benchmark) and by _createOrUpdateBenchmarkIfGmOrGlvToken further down,
+            // which runs unconditionally. Leaving them zeroed on a first-time deposit fed a
+            // zero price struct into GmxBenchmarkMath.premiumScaledUnderlying, whose
+            // totalUnderlyingWorth then divides by zero: every first fund() of a GM market
+            // token into an account with no benchmark for it reverted with Panic(0x12), and
+            // the GLV branch silently seeded a benchmark with zero prices.
+            if(tokenManager.isGlvTokenWhitelisted(address(token))){
+                UnifiedGmxTokenPricesAndAddresses memory pricesAndAddresses = _getUnifiedGlvTokenPricesAndAddresses(address(token));
+                gmxTokenPrices = GmxTokenPrices({
+                gmTokenPrice: pricesAndAddresses.gmTokenPrice,
+                longTokenPrice: pricesAndAddresses.longTokenPrice,
+                shortTokenPrice: pricesAndAddresses.shortTokenPrice
+                });
+            } else  { // isGmxMarketWhitelisted
+                gmxTokenPrices = _getGmxTokenPrices(address(token));
+            }
+
             if(benchmark.exists) {
-                if(tokenManager.isGlvTokenWhitelisted(address(token))){
-                    UnifiedGmxTokenPricesAndAddresses memory pricesAndAddresses = _getUnifiedGlvTokenPricesAndAddresses(address(token));
-                    gmxTokenPrices = GmxTokenPrices({
-                    gmTokenPrice: pricesAndAddresses.gmTokenPrice,
-                    longTokenPrice: pricesAndAddresses.longTokenPrice,
-                    shortTokenPrice: pricesAndAddresses.shortTokenPrice
-                    });
-                } else  { // isGmxMarketWhitelisted
-                    gmxTokenPrices = _getGmxTokenPrices(address(token));    
-                } 
                 // Capture the pre-sweep balance so the benchmark can be scaled down
                 // proportionally after the fee tokens leave the PA. Without scaling, the
                 // benchmark would still reflect the pre-sweep position size and the
@@ -271,7 +280,6 @@ contract AssetsOperationsFacet is ReentrancyGuardKeccak, PrimeAccountModifiers, 
         // max borrowable value gets passed in, multiplication with primeStakingRatio is done in the function
         LeverageTierLib.validateAndUpdateStakedPrime(totalCollateralValue * 10, _getAvailableBalance("PRIME")); //10x total collateral value is max borrowable value
 
-        notifyVPrimeController(DiamondStorageLib.contractOwner(), tokenManager);
         emit Borrowed(msg.sender, _asset, _amount, block.timestamp);
     }
 
@@ -310,7 +318,6 @@ contract AssetsOperationsFacet is ReentrancyGuardKeccak, PrimeAccountModifiers, 
 
         emit Repaid(msg.sender, _asset, _amount, block.timestamp);
 
-        notifyVPrimeController(DiamondStorageLib.contractOwner(), tokenManager);
         address(token).safeApprove(address(pool), 0);
     }
 
@@ -333,19 +340,6 @@ contract AssetsOperationsFacet is ReentrancyGuardKeccak, PrimeAccountModifiers, 
         DiamondStorageLib.unfreezeAccount(msg.sender); // This already emits the event
     }
 
-    function containsOracleCalldata() public view returns (bool) {
-        // Checking if the calldata ends with the RedStone marker
-        bool hasValidRedstoneMarker;
-        assembly {
-            let calldataLast32Bytes := calldataload(sub(calldatasize(), STANDARD_SLOT_BS))
-            hasValidRedstoneMarker := eq(
-                REDSTONE_MARKER_MASK,
-                and(calldataLast32Bytes, REDSTONE_MARKER_MASK)
-            )
-        }
-        return hasValidRedstoneMarker;
-    }
-
     function _validateAssetRemoval(ITokenManager tokenManager, address _address, bytes32 _symbol) internal view {
         // Check if the asset exists in the TokenManager
         if(tokenManager.tokenToStatus(_address) != 0) revert AssetStillSupported();
@@ -357,29 +351,6 @@ contract AssetsOperationsFacet is ReentrancyGuardKeccak, PrimeAccountModifiers, 
         // Loop through all assets and check if the asset exists
         for (uint i = 0; i < allAssets.length; i++) {
             if(allAssets[i] == _symbol) revert AssetExistsInTokenManager();
-        }
-    }
-
-    function getVPrimeControllerAddress(ITokenManager tokenManager) internal view returns (address) {
-        if(address(tokenManager) != address(0)) {
-            return tokenManager.getVPrimeControllerAddress();
-        }
-        return address(0);
-    }
-
-    function notifyVPrimeController(address account, ITokenManager tokenManager) internal {
-        address vPrimeControllerAddress = getVPrimeControllerAddress(tokenManager);
-        if(vPrimeControllerAddress != address(0)){
-            if(containsOracleCalldata()) {
-                proxyCalldata(
-                    vPrimeControllerAddress,
-                    abi.encodeWithSignature
-                    ("updateVPrimeSnapshot(address)", account),
-                    false
-                );
-            } else {
-                IVPrimeController(vPrimeControllerAddress).flagUserForParameterUpdate(account);
-            }
         }
     }
 

@@ -1,0 +1,7 @@
+{
+  "tag": "liquidation-facet-unblock",
+  "network": "avalanche",
+  "contracts": [
+    "SmartLoanLiquidationFacet"
+  ]
+}

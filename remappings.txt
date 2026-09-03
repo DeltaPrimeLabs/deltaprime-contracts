@@ -1,0 +1,6 @@
+forge-std/=lib/forge-std/src/
+@openzeppelin/=node_modules/@openzeppelin/
+@redstone-finance/=node_modules/@redstone-finance/
+@uniswap/=node_modules/@uniswap/
+@chainlink/=node_modules/@chainlink/
+@layerzerolabs/=node_modules/@layerzerolabs/

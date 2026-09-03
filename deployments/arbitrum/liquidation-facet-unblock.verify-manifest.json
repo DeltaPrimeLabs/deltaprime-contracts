@@ -1,0 +1,7 @@
+{
+  "tag": "liquidation-facet-unblock",
+  "network": "arbitrum",
+  "contracts": [
+    "SmartLoanLiquidationFacet"
+  ]
+}

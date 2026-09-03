@@ -74,7 +74,6 @@ interface IGlvFacet {
      * @notice Initiates the fee benchmark for a GLV token
      * @param glvToken Address of the GLV token
      */
-    function initiateGlvFeesBenchMark(address glvToken) external;
 
     /**
      * @notice Gets the annualized performance of a GLV token

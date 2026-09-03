@@ -1,0 +1,20 @@
+{
+  "_comment": "Contracts allowed to exceed 24,576 bytes runtime size in the forge size gate (tools/scripts/check-forge-sizes.js). Every entry needs a reason. Optional maxSize caps how far an allowlisted contract may grow before the gate fails anyway.",
+  "patterns": [
+    {
+      "regex": "Mock",
+      "reason": "test-only mocks, never deployed to mainnet"
+    },
+    {
+      "regex": "^[Ss]Prime",
+      "reason": "decommissioned (commit d17bd989), deployed behind Impl-split pattern"
+    }
+  ],
+  "names": [
+    {
+      "name": "GmxV2FacetArbitrum",
+      "reason": "linux-native solc 0.8.17 emits 24,666 B for this facet (+139 vs the 24,527 B that Darwin-native solc AND hardhat's solc produce from identical source/settings — platform-divergent optimizer codegen, verified via sha256 of metadata-stripped bytecode in CI run diagnostics 2026-06-12). Deployable artifacts come from hardhat (24,527 B, fits). maxSize caps CI regression room; a real growth of this facet past 24,576 deployable bytes will still surface here once linux measurement exceeds the cap. Audit M12 refactor remains the proper fix.",
+      "maxSize": 24700
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+# Production bytecode parity is load-bearing: solc 0.8.17, optimizer runs 10,
+# evmVersion london, NO via-ir — several facets only fit under 24,576 bytes at
+# these exact settings. Do not bump runs (the abandoned forge branch broke this).
+[profile.default]
+src = 'contracts'
+test = 'test/forge'
+out = 'out'
+libs = ['lib']
+cache_path = 'cache_forge'
+solc = '0.8.17'
+optimizer = true
+optimizer_runs = 10
+via_ir = false
+evm_version = 'london'
+ffi = false
+# WETH9 mock is pragma ^0.4.18 (hardhat compiles it with a dedicated 0.4.18
+# compiler entry); it has no in-tree Solidity importers — skip it here.
+skip = ['contracts/mock/WETH9.sol']
+
+# Networked tiers only (live RedStone payloads, payload-fidelity differential).
+[profile.live]
+ffi = true

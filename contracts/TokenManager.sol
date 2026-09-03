@@ -10,7 +10,7 @@ import "@openzeppelin/contracts/utils/Address.sol";
 import {DynamicSlotMapping} from "./lib/DynamicSlotMapping.sol";
 import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
-import "./lib/local/DeploymentConstants.sol";
+import "./lib/DeploymentConstants.sol";
 
 contract TokenManager is OwnableUpgradeable {
     /**
@@ -49,6 +49,8 @@ contract TokenManager is OwnableUpgradeable {
     bytes32 constant GMX_MARKETS_PLUS_MAPPING_SLOT = keccak256("gmx.markets.plus.mapping.storage");
     bytes32 constant GMX_MARKETS_GLV_MAPPING_SLOT = keccak256("gmx.markets.glv.mapping.storage");
     bytes32 constant CHAINLINK_FEEDS_MAPPING_SLOT = keccak256("chainlink.feeds.mapping.storage");
+    bytes32 constant PARASWAP_EXECUTORS_WHITELISTED_MAPPING_SLOT = keccak256("paraswap.executors.whitelisted.mapping.storage");
+    bytes32 constant DEPOSIT_SWAP_ADDRESS_SLOT = keccak256("deposit.swap.address.storage");
 
     using EnumerableMap for EnumerableMap.Bytes32ToAddressMap;
 
@@ -76,7 +78,9 @@ contract TokenManager is OwnableUpgradeable {
     mapping(address => mapping(bytes32 => uint256)) public pendingUserExposure;
     mapping(bytes32 => uint256) public pendingProtocolExposure;
 
-    address public vPrimeControllerAddress;
+    // DEPRECATED: vPrime/sPrime programme removed. Storage slot retained (do NOT delete or
+    // reorder) to preserve the upgradeable TokenManager's layout for the vars that follow.
+    address private __deprecated_vPrimeControllerAddress;
 
     // Mapping for recording per-user per-token (normalized) exposure
     mapping(address => mapping(bytes32 => uint256)) public recordedUserExposure;
@@ -91,20 +95,6 @@ contract TokenManager is OwnableUpgradeable {
 
     address[] private unsupportedWithdrawableAssets;
     mapping(address => bool) private isUnsupportedWithdrawableAsset;
-
-    /**
-    * Returns the address of the vPrimeController contract
-     */
-    function getVPrimeControllerAddress() public view returns (address) {
-        return vPrimeControllerAddress;
-    }
-
-    /**
-    * Sets the address of the vPrimeController contract
-     */
-    function setVPrimeControllerAddress(address _vPrimeControllerAddress) public onlyOwner {
-        vPrimeControllerAddress = _vPrimeControllerAddress;
-    }
 
     function initialize(Asset[] memory tokenAssets, poolAsset[] memory poolAssets) external initializer {
         __Ownable_init();
@@ -591,6 +581,110 @@ contract TokenManager is OwnableUpgradeable {
     }
 
 
+    /**
+    * @notice Whitelists ParaSwap executor addresses
+    * @dev ParaSwap executors used to be hardcoded in ParaSwapHelper, which meant every ParaSwap
+    *      router/executor rotation required a facet redeploy + diamondCut. They now live in the
+    *      TokenManager so they can be added/removed by the owner without touching bytecode.
+    *      Idempotent: already-whitelisted executors are silently skipped (no event, no revert),
+    *      so a batch may be re-sent safely.
+    * @param executors The executor addresses to whitelist
+    */
+    function whitelistParaSwapExecutors(address[] calldata executors) external onlyOwner {
+        for (uint256 i; i < executors.length; ++i) {
+            address executor = executors[i];
+            require(executor != address(0), "Invalid executor address");
+            if (DynamicSlotMapping.getBool(PARASWAP_EXECUTORS_WHITELISTED_MAPPING_SLOT, executor)) continue;
+
+            DynamicSlotMapping.setBool(PARASWAP_EXECUTORS_WHITELISTED_MAPPING_SLOT, executor, true);
+            emit ParaSwapExecutorWhitelisted(msg.sender, executor, block.timestamp);
+        }
+    }
+
+    /**
+    * @notice Removes ParaSwap executor addresses from the whitelist
+    * @dev Idempotent: executors that are not whitelisted are silently skipped.
+    * @param executors The executor addresses to delist
+    */
+    function delistParaSwapExecutors(address[] calldata executors) external onlyOwner {
+        for (uint256 i; i < executors.length; ++i) {
+            address executor = executors[i];
+            if (!DynamicSlotMapping.getBool(PARASWAP_EXECUTORS_WHITELISTED_MAPPING_SLOT, executor)) continue;
+
+            DynamicSlotMapping.setBool(PARASWAP_EXECUTORS_WHITELISTED_MAPPING_SLOT, executor, false);
+            emit ParaSwapExecutorDelisted(msg.sender, executor, block.timestamp);
+        }
+    }
+
+    /**
+    * @notice Checks whether an address is a whitelisted ParaSwap executor
+    * @param executor The executor address to check
+    * @return True if the executor is whitelisted
+    */
+    function isParaSwapExecutorWhitelisted(address executor) public view returns (bool) {
+        return DynamicSlotMapping.getBool(PARASWAP_EXECUTORS_WHITELISTED_MAPPING_SLOT, executor);
+    }
+
+    /**
+    * @notice Enables the DepositSwap contract for Pool.withdrawInstant()
+    * @dev Does NOT grant the bypass on its own: Pool checks msg.sender against its compiled-in
+    *      DeploymentChainConfig.DEPOSIT_SWAP as well, so granting still requires a Pool upgrade
+    *      (TUP timelock). This flag only enables/revokes that address. Single active address:
+    *      whitelisting a new one delists the previous. Idempotent.
+    * @param depositSwap The DepositSwap contract address to whitelist
+    */
+    function whitelistDepositSwap(address depositSwap) external onlyOwner {
+        require(depositSwap != address(0), "Invalid DepositSwap address");
+        // Same check _addPoolAsset applies: an EOA or not-yet-deployed address would leave
+        // withdrawInstant disabled protocol-wide until someone noticed.
+        require(Address.isContract(depositSwap), "DepositSwap must be a contract");
+        address previous = getDepositSwapAddress();
+        // Idempotent so a replayed batch is safe. delistDepositSwap() is deliberately NOT
+        // idempotent: revoking nothing is an operator error worth surfacing.
+        if (previous == depositSwap) return;
+
+        _setDepositSwapAddress(depositSwap);
+        emit DepositSwapWhitelisted(msg.sender, depositSwap, previous, block.timestamp);
+    }
+
+    /**
+    * @notice Revokes the withdrawInstant bypass immediately (kill-switch)
+    * @dev Pool.withdrawInstant() reverts for every caller afterwards, without waiting for a
+    *      Pool upgrade.
+    */
+    function delistDepositSwap() external onlyOwner {
+        address previous = getDepositSwapAddress();
+        require(previous != address(0), "No DepositSwap whitelisted");
+
+        _setDepositSwapAddress(address(0));
+        emit DepositSwapDelisted(msg.sender, previous, block.timestamp);
+    }
+
+    /**
+    * @notice The DepositSwap contract currently enabled for Pool.withdrawInstant()
+    * @return depositSwap The enabled DepositSwap address, or address(0) when none is set
+    */
+    function getDepositSwapAddress() public view returns (address depositSwap) {
+        bytes32 slot = DEPOSIT_SWAP_ADDRESS_SLOT;
+        // Mask to 20 bytes so the invariant holds locally instead of depending on every
+        // future writer to this slot passing through the ABI decoder.
+        assembly { depositSwap := and(sload(slot), 0xffffffffffffffffffffffffffffffffffffffff) }
+    }
+
+    /**
+    * @notice Checks whether an address is the enabled DepositSwap
+    * @param candidate The address to check
+    * @return True if `candidate` is the active DepositSwap
+    */
+    function isDepositSwapWhitelisted(address candidate) public view returns (bool) {
+        return candidate != address(0) && candidate == getDepositSwapAddress();
+    }
+
+    function _setDepositSwapAddress(address depositSwap) private {
+        bytes32 slot = DEPOSIT_SWAP_ADDRESS_SLOT;
+        assembly { sstore(slot, depositSwap) }
+    }
+
     /// @notice Sets the Chainlink price feed address for a specific token
     /// @dev Stores the feed address in a dynamic storage slot mapping. Only callable by the contract owner
     /// @param token The address of the token for which to set the Chainlink feed
@@ -840,6 +934,56 @@ contract TokenManager is OwnableUpgradeable {
         address indexed performer,
         address indexed token,
         address indexed feed,
+        uint256 timestamp
+    );
+
+    /**
+     * @dev Emitted when the active DepositSwap contract is set (or replaced)
+     * @param performer Address that whitelisted the DepositSwap
+     * @param depositSwap The DepositSwap address that is now active
+     * @param previous The DepositSwap address it replaced
+     * @param timestamp Block timestamp
+     */
+    event DepositSwapWhitelisted(
+        address indexed performer,
+        address indexed depositSwap,
+        address indexed previous,
+        uint256 timestamp
+    );
+
+    /**
+     * @dev Emitted when the active DepositSwap contract is removed
+     * @param performer Address that delisted the DepositSwap
+     * @param depositSwap The DepositSwap address that was delisted
+     * @param timestamp Block timestamp
+     */
+    event DepositSwapDelisted(
+        address indexed performer,
+        address indexed depositSwap,
+        uint256 timestamp
+    );
+
+    /**
+     * @dev Emitted when a ParaSwap executor is added to the whitelist
+     * @param performer Address that whitelisted the executor
+     * @param executor Executor address that was whitelisted
+     * @param timestamp Block timestamp
+     */
+    event ParaSwapExecutorWhitelisted(
+        address indexed performer,
+        address indexed executor,
+        uint256 timestamp
+    );
+
+    /**
+     * @dev Emitted when a ParaSwap executor is removed from the whitelist
+     * @param performer Address that delisted the executor
+     * @param executor Executor address that was delisted
+     * @param timestamp Block timestamp
+     */
+    event ParaSwapExecutorDelisted(
+        address indexed performer,
+        address indexed executor,
         uint256 timestamp
     );
 }

@@ -12,7 +12,7 @@ import "../../interfaces/facets/IBeefyFinance.sol";
 import {DiamondStorageLib} from "../../lib/DiamondStorageLib.sol";
 
 //This path is updated during deployment
-import "../../lib/local/DeploymentConstants.sol";
+import "../../lib/DeploymentConstants.sol";
 
 contract BeefyFinanceAvalancheFacet is ReentrancyGuardKeccak, DiamondMethodsAccess, PrimeAccountModifiers {
     using TransferHelper for address payable;

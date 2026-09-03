@@ -37,7 +37,6 @@ contract WrappedNativeTokenPool is Pool {
             poolRewarder.stakeFor(msg.value, msg.sender);
         }
 
-        notifyVPrimeController(msg.sender);
 
         emit Deposit(msg.sender, msg.value, block.timestamp);
     }
@@ -80,7 +79,6 @@ contract WrappedNativeTokenPool is Pool {
             poolRewarder.withdrawFor(finalAmount, msg.sender);
         }
 
-        notifyVPrimeController(msg.sender);
 
         // Unwrap and transfer native tokens last
         IWrappedNativeToken(tokenAddress).withdraw(finalAmount);

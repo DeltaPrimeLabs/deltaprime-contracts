@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: BUSL-1.1
-// Last deployed from commit: 671e0ff496252fbe09515497c2344519229ca2cc;
+// Last deployed from commit: a52a9854d08c0ef6be5d121511952dd473bb82dd;
 pragma solidity 0.8.17;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -11,13 +11,14 @@ import {DiamondStorageLib} from "../lib/DiamondStorageLib.sol";
 import {ITokenManager} from "../interfaces/ITokenManager.sol";
 import {IStakingPositions} from "../interfaces/IStakingPositions.sol";
 import {Pool} from "../Pool.sol";
+import {LeverageTierLib} from "../lib/LeverageTierLib.sol";
 import {PrimeAccountModifiers} from "../PrimeAccountModifiers.sol";
 import {SmartLoanLiquidationFacet} from "./SmartLoanLiquidationFacet.sol";
 import {IAssetsOperationsFacet} from "../interfaces/facets/IAssetsOperationsFacet.sol";
 import {ParaSwapHelper} from "../lib/ParaSwapHelper.sol";
 
 //this path is updated during deployment
-import {DeploymentConstants} from "../lib/local/DeploymentConstants.sol";
+import {DeploymentConstants} from "../lib/DeploymentConstants.sol";
 
 /**
  * @title SwapDebtFacet
@@ -50,6 +51,26 @@ contract SwapDebtFacet is ReentrancyGuardKeccak, PrimeAccountModifiers, ParaSwap
      * @param fromToken The original debt token address being repaid
      * @param repayAmount The amount to repay
      */
+    /**
+     * @notice Borrows `_borrowAmount` of `_toAsset` while keeping the leverage-tier PRIME
+     *         accounting in sync, exactly as AssetsOperationsFacet.borrow does.
+     * @dev Snapshots prime debt on the pre-borrow state, borrows, then re-validates/updates the
+     *      required PRIME stake against the (unchanged) collateral value. Kept in its own frame
+     *      so swapDebtParaSwap stays under the stack-depth limit without via-ir.
+     */
+    function _borrowWithPrimeAccounting(bytes32 _toAsset, uint256 _borrowAmount) private {
+        ITokenManager tokenManager = DeploymentConstants.getTokenManager();
+        Pool toAssetPool = Pool(tokenManager.getPoolAddress(_toAsset));
+
+        uint256 totalDebt = _getDebt();
+        LeverageTierLib.updatePrimeDebtSnapshot(totalDebt);
+        uint256 maxBorrowableValue = (_getTotalValue() - totalDebt) * 10;
+
+        toAssetPool.borrow(_borrowAmount);
+
+        LeverageTierLib.validateAndUpdateStakedPrime(maxBorrowableValue, _getAvailableBalance("PRIME"));
+    }
+
     function _processRepay(ITokenManager tokenManager, Pool fromAssetPool, address fromToken, uint256 repayAmount) internal {
         fromToken.safeApprove(address(fromAssetPool), 0);
         fromToken.safeApprove(address(fromAssetPool), repayAmount);
@@ -97,9 +118,12 @@ contract SwapDebtFacet is ReentrancyGuardKeccak, PrimeAccountModifiers, ParaSwap
             require(maxDiff <= 500, "Dollar value diff too high"); // 500 = 5%
         }
 
-        Pool toAssetPool = Pool(tokenManager.getPoolAddress(_toAsset));
-        toAssetPool.borrow(_borrowAmount);
-        
+        // Borrow the new asset with the same PRIME debt-snapshot + stake re-sync that
+        // AssetsOperationsFacet.borrow performs, so a debt swap cannot expand a Premium position
+        // outside the leverage-tier PRIME-staking gate.
+        // Encapsulated in a helper to keep swapDebtParaSwap within the stack-depth limit (no via-ir).
+        _borrowWithPrimeAccounting(_toAsset, _borrowAmount);
+
         uint256 initialRepayTokenAmount = _getAvailableBalance(_fromAsset);
         
         // Update lastBorrowTimestamp to prevent flash loan attacks
@@ -119,7 +143,13 @@ contract SwapDebtFacet is ReentrancyGuardKeccak, PrimeAccountModifiers, ParaSwap
                     paraSwapDecodedData.srcToken,
                     paraSwapDecodedData.destToken
                 );
-                
+
+            // Bind the ParaSwap route to the declared refinance: it must sell the borrowed
+            // _toAsset and buy the _fromAsset being repaid. Without this binding an unrelated
+            // swap could create new _toAsset debt while repaying none of the _fromAsset debt.
+            require(paraSwapDecodedData.srcToken == address(toToken), "Debt swap must sell the borrowed asset");
+            require(paraSwapDecodedData.destToken == address(fromToken), "Debt swap must buy the repaid asset");
+
             executeSwap(selector, data, details, paraSwapDecodedData, false);
         }
  

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: BUSL-1.1
-// Last deployed from commit: 56b7ba6f74e4dd5f903aad49110b5db8a353f45f;
+// Last deployed from commit: 3d82a02e8428929338629f259e5db546859ee768;
 pragma solidity 0.8.17;
 
 import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
@@ -12,7 +12,7 @@ import "../interfaces/ITokenManager.sol";
 import "../PrimeAccountModifiers.sol";
 
 //This path is updated during deployment
-import "../lib/local/DeploymentConstants.sol";
+import "../lib/DeploymentConstants.sol";
 
 import "./avalanche/SolvencyFacetProdAvalanche.sol";
 import "../SmartLoanDiamondBeacon.sol";
@@ -39,6 +39,27 @@ contract SmartLoanLiquidationFacet is ISmartLoanLiquidationFacet, ReentrancyGuar
     /**
      * @return uint256 liquidation fee percentage based on user's leverage tier
     **/
+    /**
+    * @dev Fee percentage for an explicitly supplied tier. liquidate() uses this
+    *      with the tier captured by snapshotInsolvency so the fee cannot be moved by the
+    *      account owner inside the liquidation window. Takes uint256 rather than the enum
+    *      because that is how the snapshot stores it.
+    *
+    *      `internal` deliberately: liquidate() is its only consumer and calls it in-contract,
+    *      so a public selector would have to be added to the diamond — and this repo's cut
+    *      tooling has no Add path (checkMethodsSelectorsAgainstDiamondLoupe defaults to
+    *      replaceOnly and silently filters unregistered selectors; its else branch throws
+    *      "Not implemented!"). Keeping it internal means the selector never exists, so a pure
+    *      Replace cut stays correct.
+    */
+    function getLiquidationFeePercentForTier(uint256 tier) internal pure returns (uint256) {
+        if (tier == uint256(LeverageTierLib.LeverageTier.PREMIUM)) {
+            return LIQUIDATION_FEE_PERCENT_PREMIUM;
+        }
+        // Default to BASIC (also covers _NON_EXISTENT and any unset snapshot).
+        return LIQUIDATION_FEE_PERCENT_BASIC;
+    }
+
     function getLiquidationFeePercent() public view returns (uint256) {
         LeverageTierLib.LeverageTier currentTier = DiamondStorageLib.getPrimeLeverageTier();
         
@@ -101,21 +122,25 @@ contract SmartLoanLiquidationFacet is ISmartLoanLiquidationFacet, ReentrancyGuar
 
     function snapshotInsolvency() external onlyWhitelistedLiquidators accountNotFrozen nonReentrant {
         DiamondStorageLib.LiquidationSnapshotStorage storage ls = DiamondStorageLib.liquidationSnapshotStorage();
-        require(ls.lastInsolventTimestamp == 0, "Account is already being liquidated");
-        
+        bool reArmingExpired = ls.lastInsolventTimestamp != 0 &&
+            block.timestamp - ls.lastInsolventTimestamp >= DiamondStorageLib.INSOLVENCY_SNAPSHOT_VALIDITY;
+        require(ls.lastInsolventTimestamp == 0 || reArmingExpired, "Account is already being liquidated");
+
         uint256 hr = _getHealthRatio();
         require(hr < 1e18, "Account is solvent");
-        
+
         ls.lastInsolventTimestamp = block.timestamp;
         ls.healthRatioSnapshot = hr;
-        // Capture $-denominated debt at snapshot time. Pre-liquidation swaps may only
-        // cause cumulative $-slippage loss up to MAX_CUMULATIVE_LOSS_BPS of this figure.
         ls.debtSnapshotDollars = _getDebt();
-        // Defensively zero the cumulative-loss accumulator on every fresh snapshot. The
-        // existing clear paths (clearInsolvencySnapshot, liquidate) already wipe it, but
-        // this guarantees a new snapshot never inherits a stale loss budget from a prior
-        // liquidation cycle.
-        delete ls.cumulativeLossDollars;
+        // Pin the leverage tier. liquidate() reads the fee from this rather than from live
+        // storage, so nothing the owner can change inside the window (the tier, and therefore
+        // both the fee percentage and the tier's debt coverage) can move the fee.
+        ls.leverageTierSnapshot = uint256(DiamondStorageLib.getPrimeLeverageTier());
+
+        // Carry over the accumulated pre-liquidation loss on an expiry re-arm; reset only on a fresh cycle.
+        if (!reArmingExpired) {
+            delete ls.cumulativeLossDollars;
+        }
 
         emit InsolvencySnapshot(msg.sender, hr, block.timestamp);
     }
@@ -133,6 +158,7 @@ contract SmartLoanLiquidationFacet is ISmartLoanLiquidationFacet, ReentrancyGuar
         delete ls.healthRatioSnapshot;
         delete ls.debtSnapshotDollars;
         delete ls.cumulativeLossDollars;
+        delete ls.leverageTierSnapshot;
 
         emit InsolvencySnapshotCleared(msg.sender, block.timestamp);
     }
@@ -157,7 +183,7 @@ contract SmartLoanLiquidationFacet is ISmartLoanLiquidationFacet, ReentrancyGuar
         /// taken it, they are entitled to liquidate within the 15-minute window enforced below
         /// regardless of any subsequent price recovery. Re-checking _isSolvent() here would let an
         /// attacker block legitimate liquidation by pumping prices for a single block.
-        require(block.timestamp - ls.lastInsolventTimestamp < 15 minutes, "Insolvency snapshot expired - take a new one");
+        require(block.timestamp - ls.lastInsolventTimestamp < DiamondStorageLib.INSOLVENCY_SNAPSHOT_VALIDITY, "Insolvency snapshot expired - take a new one");
         
         if (_emergencyMode) {
             _repayAllDebtsPartial();
@@ -175,14 +201,24 @@ contract SmartLoanLiquidationFacet is ISmartLoanLiquidationFacet, ReentrancyGuar
             require(remainingDebt == 0, "Not all debt was repaid");
             
             // Use tier-based liquidation fee calculation
-            uint256 liquidationFee = initialDebt * getLiquidationFeePercent() / DeploymentConstants.getPercentagePrecision();
+            // The fee percentage comes from the tier captured at snapshot time, never from
+            // live storage.
+            uint256 liquidationFee = initialDebt
+                * getLiquidationFeePercentForTier(ls.leverageTierSnapshot)
+                / DeploymentConstants.getPercentagePrecision();
             
             uint256 currentTotalValue = _getTotalValue();
             
             uint256 actualLiquidationFee = Math.min(liquidationFee, currentTotalValue);
-            
-            uint256 percentageToTake = actualLiquidationFee * 1e18 / currentTotalValue;
-            
+
+            // Guard against 0/0: when collateral is fully consumed by debt repayment
+            // currentTotalValue == 0 (and actualLiquidationFee is 0 via Math.min above), so a
+            // plain division panics. There is no value left to take a fee from, so we skip
+            // distribution and let the standard path complete with the debt fully repaid.
+            uint256 percentageToTake = currentTotalValue > 0
+                ? actualLiquidationFee * 1e18 / currentTotalValue
+                : 0;
+
             if(percentageToTake > 0) {
                 _distributeLiquidationFee(percentageToTake);
             }
@@ -193,6 +229,7 @@ contract SmartLoanLiquidationFacet is ISmartLoanLiquidationFacet, ReentrancyGuar
         delete ls.healthRatioSnapshot;
         delete ls.debtSnapshotDollars;
         delete ls.cumulativeLossDollars;
+        delete ls.leverageTierSnapshot;
 
         // Emit liquidation event
         emit Liquidated(

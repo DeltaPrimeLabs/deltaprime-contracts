@@ -11,7 +11,7 @@ import "../../interfaces/facets/avalanche/IWombatRouter.sol";
 import "../../interfaces/facets/avalanche/IRewarder.sol";
 import "../../interfaces/IStakingPositions.sol";
 import "../../interfaces/IWrappedNativeToken.sol";
-import "../../lib/local/DeploymentConstants.sol";
+import "../../lib/DeploymentConstants.sol";
 
 contract WombatFacet is ReentrancyGuardKeccak, DiamondMethodsAccess, PrimeAccountModifiers {
     using TransferHelper for address;

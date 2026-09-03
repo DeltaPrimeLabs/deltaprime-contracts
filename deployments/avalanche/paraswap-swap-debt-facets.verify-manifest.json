@@ -1,0 +1,8 @@
+{
+  "tag": "paraswap-swap-debt-facets",
+  "network": "avalanche",
+  "contracts": [
+    "ParaSwapFacet",
+    "SwapDebtFacet"
+  ]
+}

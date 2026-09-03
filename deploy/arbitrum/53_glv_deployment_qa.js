@@ -143,7 +143,6 @@ module.exports = async ({ getNamedAccounts, deployments }) => {
             functions: [
                 'depositWethUsdcGlv',
                 'withdrawWethUsdcGlv',
-                'initiateGlvFeesBenchMark',
                 'sweepFeesAndUpdateGlvBenchMark',
                 'getGlvPerformance',
                 'depositBtcUsdcGlv',

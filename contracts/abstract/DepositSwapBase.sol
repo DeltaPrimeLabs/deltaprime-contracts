@@ -10,6 +10,8 @@ import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.
 import "./PendingOwnableUpgradeable.sol";
 import "../Pool.sol";
 import "../lib/ParaSwapHelper.sol";
+import "../lib/DeploymentConstants.sol";
+import "../interfaces/ITokenManager.sol";
 
 abstract contract DepositSwapBase is ReentrancyGuardUpgradeable, PendingOwnableUpgradeable, ParaSwapHelper {
     using SafeERC20 for IERC20;
@@ -60,28 +62,63 @@ abstract contract DepositSwapBase is ReentrancyGuardUpgradeable, PendingOwnableU
         _;
     }
 
-    // ============ VIRTUAL FUNCTIONS TO BE OVERRIDDEN BY CHAIN-SPECIFIC IMPLEMENTATIONS ============
+    // ============ TOKEN / POOL RESOLUTION ============
+
+    /**
+     * @notice The TokenManager backing token/pool resolution
+     */
+    function _tokenManager() internal view virtual returns (ITokenManager) {
+        return DeploymentConstants.getTokenManager();
+    }
 
     /**
      * @notice Get the pool address for a given token
      * @param token Token address
-     * @return Pool address
+     * @return Pool address, or address(0) when the token has no active pool
      */
-    function _getPoolAddress(address token) internal view virtual returns (address);
+    function _getPoolAddress(address token) internal view virtual returns (address) {
+        if (token == address(0)) return address(0);
+        ITokenManager tokenManager = _tokenManager();
+
+        bytes32 symbol = tokenManager.tokenAddressToSymbol(token);
+        if (symbol == bytes32(0)) return address(0);
+
+        if (!tokenManager.isTokenAssetActive(token)) return address(0);
+
+        // Round-trip the symbol so a stale symbol->address mapping cannot point the pool
+        // lookup at a different token than the caller supplied.
+        try tokenManager.getAssetAddress(symbol, false) returns (address registered) {
+            if (registered != token) return address(0);
+        } catch {
+            return address(0);
+        }
+
+        // getPoolAddress reverts for a symbol with no lending pool.
+        try tokenManager.getPoolAddress(symbol) returns (address pool) {
+            return pool;
+        } catch {
+            return address(0);
+        }
+    }
 
     /**
      * @notice Check if a token is supported by the contract
      * @param token Address of the token to check
      * @return supported Whether the token is supported
      */
-    function _isTokenSupported(address token) internal view virtual returns (bool);
+    function _isTokenSupported(address token) internal view virtual returns (bool supported) {
+        return _getPoolAddress(token) != address(0);
+    }
 
     /**
      * @notice Convert token address to symbol
      * @param token Token address
      * @return symbol Token symbol as bytes32
      */
-    function _tokenAddressToSymbol(address token) internal view virtual returns (bytes32);
+    function _tokenAddressToSymbol(address token) internal view virtual returns (bytes32 symbol) {
+        symbol = _tokenManager().tokenAddressToSymbol(token);
+        if (symbol == bytes32(0)) revert UnsupportedToken(token);
+    }
 
     // ============ COMMON FUNCTIONALITY ============
 

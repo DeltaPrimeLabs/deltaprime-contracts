@@ -14,7 +14,7 @@ import "../../PrimeAccountModifiers.sol";
 import "../../interfaces/ITokenManager.sol";
 
 //This path is updated during deployment
-import "../../lib/local/DeploymentConstants.sol";
+import "../../lib/DeploymentConstants.sol";
 
 contract GLPFacet is ReentrancyGuardKeccak, DiamondMethodsAccess, PrimeAccountModifiers {
     using TransferHelper for address;

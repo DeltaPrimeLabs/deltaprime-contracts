@@ -10,7 +10,7 @@ import "../PrimeAccountModifiers.sol";
 import "../ReentrancyGuardKeccak.sol";
 
 //This path is updated during deployment
-import "../lib/local/DeploymentConstants.sol";
+import "../lib/DeploymentConstants.sol";
 
 contract SmartLoanWrappedNativeTokenFacet is DiamondMethodsAccess, PrimeAccountModifiers, ReentrancyGuardKeccak {
     using TransferHelper for address payable;

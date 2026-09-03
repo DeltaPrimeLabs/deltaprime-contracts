@@ -10,7 +10,7 @@ import {LeverageTierLib} from "../lib/LeverageTierLib.sol";
 import "../interfaces/ITokenManager.sol";
 import "../ReentrancyGuardKeccak.sol";
 import "../lib/DiamondMethodsAccess.sol";
-import "../lib/local/DeploymentConstants.sol";
+import "../lib/DeploymentConstants.sol";
 import "../interfaces/IWithdrawUnsupportedPositionsFacet.sol";
 import "../PrimeAccountModifiers.sol";
 

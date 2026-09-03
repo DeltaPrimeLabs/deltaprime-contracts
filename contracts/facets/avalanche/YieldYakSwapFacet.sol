@@ -14,10 +14,14 @@ import "../../interfaces/ITokenManager.sol";
 import "../../PrimeAccountModifiers.sol";
 
 //This path is updated during deployment
-import "../../lib/local/DeploymentConstants.sol";
+import "../../lib/DeploymentConstants.sol";
 
 contract YieldYakSwapFacet is ReentrancyGuardKeccak, DiamondMethodsAccess, PrimeAccountModifiers {
     using TransferHelper for address;
+
+    uint256 private constant MAX_BPS = 10000;
+    uint256 private constant MAX_SLIPPAGE_BPS = 500; // 5% per-swap cap vs oracle price (mirrors ParaSwapHelper)
+    uint256 private constant PRICE_DECIMALS = 10; // RedStone prices are 8-decimals; scaling matches ParaSwapHelper
 
     struct SwapTokensDetails {
         bytes32 tokenSoldSymbol;
@@ -104,6 +108,11 @@ contract YieldYakSwapFacet is ReentrancyGuardKeccak, DiamondMethodsAccess, Prime
 
         uint256 soldTokenFinalAmount = swapTokensDetails.initialSoldTokenBalance - swapTokensDetails.soldToken.balanceOf(address(this));
 
+        // Bound realised output against oracle prices (5% cap, mirrors
+        // ParaSwapHelper.checkSlippage). Defense-in-depth on top of remainsSolvent, limiting
+        // MEV / self-sandwich value leakage through thin whitelisted pools.
+        _checkOracleSlippage(swapTokensDetails, soldTokenFinalAmount, boughtTokenFinalAmount);
+
         ITokenManager tokenManager = DeploymentConstants.getTokenManager();
         _syncExposure(tokenManager, address(swapTokensDetails.boughtToken));
         _syncExposure(tokenManager, address(swapTokensDetails.soldToken));
@@ -119,6 +128,41 @@ contract YieldYakSwapFacet is ReentrancyGuardKeccak, DiamondMethodsAccess, Prime
             boughtTokenFinalAmount,
             block.timestamp
         );
+    }
+
+    /**
+     * @dev Reverts if the realised swap output is worse than the oracle-implied value by
+     *      MAX_SLIPPAGE_BPS or more. Mirrors ParaSwapHelper.checkSlippage. Applies to every
+     *      swap: both legs are registered, priceable assets by the time this runs (see the
+     *      note in the body), so there is no leg the cap can legitimately be skipped for.
+     */
+    function _checkOracleSlippage(
+        SwapTokensDetails memory details,
+        uint256 soldAmount,
+        uint256 boughtAmount
+    ) internal view {
+        // Both legs are provably registered by the time this runs, so there is no
+        // unpriceable-leg case to skip: the sold leg passed
+        // `_getAvailableBalance(tokenSoldSymbol)` above, which reverts "Asset not supported."
+        // on a zero symbol, and `getInitialTokensDetails` requires the bought leg to be an
+        // ACTIVE token asset (TokenManager keeps symbol and status in lockstep). An earlier
+        // revision skipped the cap when either symbol was zero; that branch was unreachable
+        // and, being a silent fail-open on a security check, was the wrong default. If the
+        // invariant is ever broken upstream, `getPrices` reverts rather than waving the swap
+        // through.
+        bytes32[] memory symbols = new bytes32[](2);
+        symbols[0] = details.tokenSoldSymbol;
+        symbols[1] = details.tokenBoughtSymbol;
+        uint256[] memory prices = getPrices(symbols);
+        require(prices.length == 2, "Invalid price data");
+
+        uint256 soldTokenDollarValue = prices[0] * soldAmount * (10 ** PRICE_DECIMALS) / (10 ** details.soldToken.decimals());
+        uint256 boughtTokenDollarValue = prices[1] * boughtAmount * (10 ** PRICE_DECIMALS) / (10 ** details.boughtToken.decimals());
+
+        if (soldTokenDollarValue > boughtTokenDollarValue) {
+            uint256 slippage = ((soldTokenDollarValue - boughtTokenDollarValue) * MAX_BPS) / soldTokenDollarValue;
+            require(slippage < MAX_SLIPPAGE_BPS, "YakSwap: slippage too high vs oracle");
+        }
     }
 
     function YY_ROUTER() internal virtual pure returns (address) {

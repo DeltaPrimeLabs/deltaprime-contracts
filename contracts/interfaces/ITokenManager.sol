@@ -25,7 +25,6 @@ interface ITokenManager {
     function addTokenAssets ( Asset[] memory tokenAssets ) external;
     function deactivateToken ( address token ) external;
     function debtCoverage ( address ) external view returns ( uint256 );
-    function getVPrimeControllerAddress ( ) external view returns ( address );
     function debtCoverageStaked ( bytes32 ) external view returns ( uint256 );
     function getAllPoolAssets (  ) external view returns ( bytes32[] memory result );
     function getAllTokenAssets (  ) external view returns ( bytes32[] memory result );
@@ -69,4 +68,11 @@ interface ITokenManager {
     function setChainlinkFeed(address token, address feed) external;
     function isGlvTokenWhitelisted(address glvToken) external view returns (bool);
     function setGlvTokenWhitelisting(address glvToken, bool isWhitelisted) external;
+    function whitelistParaSwapExecutors(address[] calldata executors) external;
+    function delistParaSwapExecutors(address[] calldata executors) external;
+    function isParaSwapExecutorWhitelisted(address executor) external view returns (bool);
+    function whitelistDepositSwap(address depositSwap) external;
+    function delistDepositSwap() external;
+    function getDepositSwapAddress() external view returns (address);
+    function isDepositSwapWhitelisted(address candidate) external view returns (bool);
 }

@@ -316,31 +316,6 @@ abstract contract GmxV2PlusFacet is ReentrancyGuardKeccak, PrimeAccountModifiers
         _createOrUpdatePositionBenchmark(market, positionDetails);
     }
 
-    function initiateGmxFeesBenchMarkGmxPlus(address gmToken) external nonReentrant onlyWhitelistedLiquidators {
-        UnifiedGmxTokenPricesAndAddresses memory pricesAndAddresses = _getUnifiedGmxTokenPricesAndAddresses(gmToken);
-        GmxTokenPrices memory gmxTokenPrices = GmxTokenPrices({
-            gmTokenPrice: pricesAndAddresses.gmTokenPrice,
-            longTokenPrice: pricesAndAddresses.longTokenPrice,
-            shortTokenPrice: pricesAndAddresses.shortTokenPrice
-        });
-        
-        // Both longToken and shortToken are the same in Plus markets
-        (uint256 longTokenAmount, uint256 shortTokenAmount) = _getUnderlyingTokenDetails(gmToken, gmxTokenPrices, pricesAndAddresses.longToken, pricesAndAddresses.shortToken);
-        
-        GmxPositionDetails memory positionDetails = GmxPositionDetails({
-            underlyingLongTokenAmount: longTokenAmount,
-            underlyingShortTokenAmount: shortTokenAmount,
-            gmTokenPriceUsd: pricesAndAddresses.gmTokenPrice,
-            longTokenPriceUsd: pricesAndAddresses.longTokenPrice,
-            shortTokenPriceUsd: pricesAndAddresses.shortTokenPrice,
-            benchmarkTimeStamp: block.timestamp,
-            longTokenAddress: pricesAndAddresses.longToken,
-            shortTokenAddress: pricesAndAddresses.shortToken
-        });
-        _createOrUpdatePositionBenchmark(gmToken, positionDetails);
-        
-        emit BenchmarkInitiated(gmToken, msg.sender, true, block.timestamp);
-    }
 
     function getGmPlusPerformance(address gmToken) external view returns (uint256) {
         GmxTokenPrices memory gmTokenPrices = _getGmxTokenPrices(gmToken);

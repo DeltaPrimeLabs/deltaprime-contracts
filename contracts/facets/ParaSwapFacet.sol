@@ -9,7 +9,7 @@ import "../lib/DiamondMethodsAccess.sol";
 import "./SmartLoanLiquidationFacet.sol";
 import "../interfaces/ITokenManager.sol";
 import "../interfaces/facets/avalanche/IParaSwapFacet.sol";
-import "../lib/local/DeploymentConstants.sol";
+import "../lib/DeploymentConstants.sol";
 import {ParaSwapHelper} from "../lib/ParaSwapHelper.sol";
 import "../PrimeAccountModifiers.sol";
 

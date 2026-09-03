@@ -64,7 +64,6 @@ interface IGmxV2Facet {
 
     function refundExecutionFee(bytes32 key, EventUtils.EventLogData memory eventData) external payable;
     
-    function initiateGmxFeesBenchMark(address gmToken) external;
     
     function getGmPerformance(address gmToken) external view returns (uint256);
 }

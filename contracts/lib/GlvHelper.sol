@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity 0.8.17;
 
-import "./local/DeploymentConstants.sol";
+import "./DeploymentConstants.sol";
 import "./DiamondStorageLib.sol";
 import "./DiamondMethodsAccess.sol";
 import "../ReentrancyGuardKeccak.sol";

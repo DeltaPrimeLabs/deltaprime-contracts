@@ -20,7 +20,6 @@ const CONFIG = {
     'GM_LINK_LINK_USDC': '0x7f1fa204bb700853D36994DA19F830b6Ad18455C',
     'GM_UNI_UNI_USDC': '0xc7Abb2C5f3BF3CEB389dF0Eecd6120D451170B50',
     'GM_BTC_WBTC_USDC': '0x47c031236e19d024b42f8AE6780E44A573170703',
-    'GM_SOL_SOL_USDC': '0x09400D9DB990D5ed3f35D7be61DfAEB900Af03C9',
     'GM_NEAR_WETH_USDC': '0x63Dc80EE90F26363B3FCD609007CC9e14c8991BE',
     'GM_ATOM_WETH_USDC': '0x248C35760068cE009a13076D573ed3497A47bCD4',
     'GM_GMX_GMX_USDC': '0x55391D178Ce46e7AC8eaAEa50A72D1A5a8A622Da',
@@ -40,9 +39,53 @@ const CONFIG = {
     'GM_AVAX_WAVAX': '0x08b25A2a89036d298D6dB8A74ace9d1ce6Db15E5'
   },
 
-  // RedStone cache layer URLs
-  CACHE_LAYER_URLS: {
-    urls: null
+  // RedStone data-service configuration.
+  //
+  // Both Arbitrum and Avalanche DeltaPrime have been migrated on-chain to the
+  // shared RedStone primary node (`PrimaryProdDataServiceConsumerBase`), so all
+  // off-chain callers must request packages signed by the primary-prod signer
+  // set with `dataServiceId = redstone-primary-prod`. evm-connector 0.9.0 also
+  // requires the caller to pass `authorizedSigners` and an explicit
+  // `dataPackagesIds` list (the old auto-detect/`returnAllPackages` behaviour is
+  // gone — see the comment on `wrapContractArbitrum`).
+  //
+  // These values mirror the production liquidation bots / solvency monitors in
+  // aws-serverless (the same migration, already live):
+  //   arbitrum/liquidatePAArbitrum/config.json
+  //   avalanche/liquidatePAAvalanche/config.json
+  REDSTONE: {
+    DATA_SERVICE_ID: 'redstone-primary-prod',
+    UNIQUE_SIGNERS_COUNT: 3,
+    // PRIMARY_PROD signer set — hardcoded in PrimaryProdDataServiceConsumerBase.
+    AUTHORIZED_SIGNERS: [
+      '0x8BB8F32Df04c8b654987DAaeD53D6B6091e3B774',
+      '0xdEB22f54738d54976C4c0fe5ce6d408E40d88499',
+      '0x51Ce04Be4b3E32572C4Ec9135221d0691Ba7d202',
+      '0xDD682daEC5A90dD295d14DA4b0bec9281017b5bE',
+      '0x9c5AE89C4Af6aA32cE58588DBaF90d18a855B6de',
+    ],
+    // Explicit feed lists. These determine which prices get attached to the tx
+    // payload; the on-chain solvency check (via the `remainsSolvent` modifier on
+    // sweepFeesAndUpdateBenchMark) prices every supported owned asset, so the
+    // list must cover them. It MUST contain only feeds primary-prod actually
+    // publishes — the strict 0.9.0 SDK rejects the WHOLE request if any listed
+    // feed is missing.
+    ARBITRUM_DATA_PACKAGES_IDS: [
+      'ETH', 'USDC', 'ARB', 'USDT', 'GMX', 'BTC', 'DAI', 'LINK', 'weETH',
+      'GM_GMX_GMX', 'wstETH', 'UNI', 'GM_SUI_WETH_USDC', 'GM_SEI_WETH_USDC',
+      'GM_ETH_WETH', 'GM_ETH_WETH_USDC', 'JOE', 'MOO_GMX',
+      'GM_NEAR_WETH_USDC', 'GM_ATOM_WETH_USDC', 'GM_GMX_GMX_USDC',
+      'GM_BTC_WBTC_USDC', 'GM_BTC_WBTC', 'GM_ARB_ARB_USDC',
+      'GM_LINK_LINK_USDC', 'GM_UNI_UNI_USDC',
+    ],
+    AVALANCHE_DATA_PACKAGES_IDS: [
+      'AVAX', 'USDC', 'BTC', 'ETH', 'USDT', 'sAVAX', 'GM_AVAX_WAVAX_USDC',
+      'WOMBAT_ggAVAX_AVAX_LP_AVAX', 'WOMBAT_sAVAX_AVAX_LP_sAVAX',
+      'GM_BTC_BTCb_USDC', 'WOMBAT_sAVAX_AVAX_LP_AVAX', 'EUROC',
+      'GM_ETH_WETHe_USDC', 'JOE', 'GMX', 'ggAVAX',
+      'WOMBAT_ggAVAX_AVAX_LP_ggAVAX', 'GM_ETH_WETHe', 'GM_BTC_BTCb',
+      'GM_AVAX_WAVAX',
+    ],
   },
 
   // Progress tracking file
@@ -101,27 +144,33 @@ class FeeSweeper {
     };
   }
 
-  // RedStone wrapper functions
+  // RedStone wrapper functions.
+  //
+  // evm-connector 0.9.0 changed the `usingDataService` API: it takes a SINGLE
+  // config object (the old second `urls` positional arg is gone), and
+  // `requestDataPackages` now requires `authorizedSigners` plus an explicit
+  // `dataPackagesIds` (or `returnAllPackages`). Calling it the old 0.2.5 way
+  // throws `Cannot read properties of undefined (reading 'length')` from inside
+  // the SDK while building the payload — before any tx is sent. We pass the
+  // primary-prod signer set + the per-chain feed list (see CONFIG.REDSTONE).
   wrapContractArbitrum(contract) {
-    return WrapperBuilder.wrap(contract).usingDataService(
-      {
-        dataServiceId: "redstone-arbitrum-prod",
-        uniqueSignersCount: 3,
-        disablePayloadsDryRun: true
-      },
-      CONFIG.CACHE_LAYER_URLS.urls
-    );
+    return WrapperBuilder.wrap(contract).usingDataService({
+      dataServiceId: CONFIG.REDSTONE.DATA_SERVICE_ID,
+      uniqueSignersCount: CONFIG.REDSTONE.UNIQUE_SIGNERS_COUNT,
+      authorizedSigners: CONFIG.REDSTONE.AUTHORIZED_SIGNERS,
+      dataPackagesIds: CONFIG.REDSTONE.ARBITRUM_DATA_PACKAGES_IDS,
+      disablePayloadsDryRun: true
+    });
   }
 
   wrapContractAvalanche(contract) {
-    return WrapperBuilder.wrap(contract).usingDataService(
-      {
-        dataServiceId: "redstone-avalanche-prod",
-        uniqueSignersCount: 3,
-        disablePayloadsDryRun: true
-      },
-      CONFIG.CACHE_LAYER_URLS.urls
-    );
+    return WrapperBuilder.wrap(contract).usingDataService({
+      dataServiceId: CONFIG.REDSTONE.DATA_SERVICE_ID,
+      uniqueSignersCount: CONFIG.REDSTONE.UNIQUE_SIGNERS_COUNT,
+      authorizedSigners: CONFIG.REDSTONE.AUTHORIZED_SIGNERS,
+      dataPackagesIds: CONFIG.REDSTONE.AVALANCHE_DATA_PACKAGES_IDS,
+      disablePayloadsDryRun: true
+    });
   }
 
   // Load progress from file

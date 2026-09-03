@@ -52,16 +52,17 @@ contract WithdrawalIntentFacet is IWithdrawalIntentFacet, ReentrancyGuardKeccak,
         address tokenAddress = address(token);
         ITokenManager tokenManager = DeploymentConstants.getTokenManager();
         GmxTokenPrices memory gmTokenPrices;
+        UnifiedGmxTokenPricesAndAddresses memory glvPricesAndAddresses;
         uint256 finalAmount = validateWithdrawalIntents(tokenAddress, intentIndices);
         uint256 feesCollected = 0;
         
         if (tokenManager.isGmxMarketWhitelisted(tokenAddress) || tokenManager.isGlvTokenWhitelisted(tokenAddress)) {
             if(tokenManager.isGlvTokenWhitelisted(tokenAddress)) {
-                UnifiedGmxTokenPricesAndAddresses memory pricesAndAddresses = _getUnifiedGlvTokenPricesAndAddresses(address(token));
+                glvPricesAndAddresses = _getUnifiedGlvTokenPricesAndAddresses(address(token));
                 gmTokenPrices = GmxTokenPrices({
-                gmTokenPrice: pricesAndAddresses.gmTokenPrice,
-                longTokenPrice: pricesAndAddresses.longTokenPrice,
-                shortTokenPrice: pricesAndAddresses.shortTokenPrice
+                gmTokenPrice: glvPricesAndAddresses.gmTokenPrice,
+                longTokenPrice: glvPricesAndAddresses.longTokenPrice,
+                shortTokenPrice: glvPricesAndAddresses.shortTokenPrice
                 });
             } else  { // isGmxMarketWhitelisted
                 gmTokenPrices = _getGmxTokenPrices(tokenAddress);    
@@ -118,6 +119,20 @@ contract WithdrawalIntentFacet is IWithdrawalIntentFacet, ReentrancyGuardKeccak,
                 gmTokenPrices.shortTokenPrice,
                 block.timestamp
             );
+        } else if (tokenManager.isGlvTokenWhitelisted(tokenAddress)) {
+            // Mirror the GM path for GLV — refresh the position benchmark to the
+            // post-withdrawal balance. Without it the (now smaller) GLV position keeps a stale,
+            // oversized benchmark, suppressing measured performance and under-collecting
+            // performance fees until the next keeper sweep. GlvFacet does this on its own paths.
+            _updateGlvBenchmark(tokenAddress, glvPricesAndAddresses);
+
+            emit BenchmarkUpdatedDuringWithdrawalIntent(
+                tokenAddress,
+                glvPricesAndAddresses.gmTokenPrice,
+                glvPricesAndAddresses.longTokenPrice,
+                glvPricesAndAddresses.shortTokenPrice,
+                block.timestamp
+            );
         }
 
         // Update exposure only if not PRIME token
@@ -135,6 +150,25 @@ contract WithdrawalIntentFacet is IWithdrawalIntentFacet, ReentrancyGuardKeccak,
             feesCollected,
             block.timestamp
         );
+    }
+
+    /// @dev GLV equivalent of GmxV2FeesHelper._updateBenchmark. Refreshes the GLV position
+    /// benchmark to the PA's current (post-withdrawal) balance, mirroring
+    /// GlvFacet._updateGlvPositionBenchmark (which lives on a facet this one does not inherit).
+    function _updateGlvBenchmark(address glvToken, UnifiedGmxTokenPricesAndAddresses memory pricesAndAddresses) private {
+        uint256 glvBalance = IERC20Metadata(glvToken).balanceOf(address(this));
+        (uint256 longTokenAmount, uint256 shortTokenAmount) = _getGlvLongAndShortTokenAmounts(glvToken, glvBalance);
+
+        _createOrUpdatePositionBenchmark(glvToken, GmxPositionDetails({
+            underlyingLongTokenAmount: longTokenAmount,
+            underlyingShortTokenAmount: shortTokenAmount,
+            gmTokenPriceUsd: pricesAndAddresses.gmTokenPrice,
+            longTokenPriceUsd: pricesAndAddresses.longTokenPrice,
+            shortTokenPriceUsd: pricesAndAddresses.shortTokenPrice,
+            benchmarkTimeStamp: block.timestamp,
+            longTokenAddress: pricesAndAddresses.longToken,
+            shortTokenAddress: pricesAndAddresses.shortToken
+        }));
     }
 
     function _repayPrimeDebtToExecuteWithdrawalIntent(uint256 amount, uint256 totalDebt, ITokenManager tokenManager) internal {
@@ -312,6 +346,7 @@ contract WithdrawalIntentFacet is IWithdrawalIntentFacet, ReentrancyGuardKeccak,
         if (isWhitelistedLiquidator) {
             DiamondStorageLib.LiquidationSnapshotStorage storage ls = DiamondStorageLib.liquidationSnapshotStorage();
             require(ls.lastInsolventTimestamp > 0, "No insolvency snapshot - call snapshotInsolvency first");
+            require(block.timestamp - ls.lastInsolventTimestamp < DiamondStorageLib.INSOLVENCY_SNAPSHOT_VALIDITY, "Insolvency snapshot expired - take a new one");
         } else {
             DiamondStorageLib.enforceIsContractOwner();
         }

@@ -1,0 +1,8 @@
+{
+  "tag": "paraswap-swap-debt-facets",
+  "network": "arbitrum",
+  "contracts": [
+    "ParaSwapFacet",
+    "SwapDebtFacet"
+  ]
+}

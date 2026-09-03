@@ -9,7 +9,7 @@ import {LeverageTierLib} from "../lib/LeverageTierLib.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 //This path is updated during deployment
-import "../lib/local/DeploymentConstants.sol";
+import "../lib/DeploymentConstants.sol";
 import "../lib/GmxV2FeesHelper.sol";
 import {IGmxReader} from "../interfaces/gmx-v2/IGmxReader.sol";
 import "../PrimeAccountModifiers.sol";

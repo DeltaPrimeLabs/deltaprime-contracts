@@ -13,7 +13,7 @@ import "../../interfaces/facets/avalanche/ITraderJoeV2Autopool.sol";
 import {DiamondStorageLib} from "../../lib/DiamondStorageLib.sol";
 
 //This path is updated during deployment
-import "../../lib/local/DeploymentConstants.sol";
+import "../../lib/DeploymentConstants.sol";
 import "../../interfaces/facets/avalanche/ITraderJoeV2AutopoolsFacet.sol";
 
 contract TraderJoeV2AutopoolsFacet is ITraderJoeV2AutopoolsFacet, ReentrancyGuardKeccak, DiamondMethodsAccess, PrimeAccountModifiers {

@@ -1,3 +1,8 @@
+// RETIRED for new work (2026-06): DeploymentConstants is now a single
+// chainid-switched library at contracts/lib/DeploymentConstants.sol — the
+// import-path rewriting below no longer matches anything and per-chain
+// constants files no longer exist. Kept only as historical record for the
+// legacy numbered deploy scripts. See docs/superpowers/specs/2026-06-11-forge-port-test-suite-design.md §4.
 export default function updateConstants(chain, exchanges, tokenManager, addressProviderAddress, diamondBeaconAddress, smartLoansFactoryAddress, maxLTV, maxSelloutHealthRatio, maxLiquidationBonus, nativeAssetSymbol, nativeAssetAddress) {
     var fs = require('fs')
     const replace = require('replace-in-file');

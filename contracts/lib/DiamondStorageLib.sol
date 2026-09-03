@@ -20,11 +20,12 @@ library DiamondStorageLib {
     bytes32 constant DIAMOND_STORAGE_POSITION = keccak256("diamond.standard.diamond.storage");
     bytes32 constant LIQUIDATION_STORAGE_POSITION = keccak256("diamond.standard.liquidation.storage");
     bytes32 constant LIQUIDATION_SNAPSHOT_STORAGE_POSITION = keccak256("diamond.standard.liquidation.snapshot.storage");
+    /// @dev Validity window for an insolvency snapshot, shared by liquidate(), the liquidator modifiers and notInLiquidation.
+    uint256 internal constant INSOLVENCY_SNAPSHOT_VALIDITY = 15 minutes;
     bytes32 constant SMARTLOAN_STORAGE_POSITION = keccak256("diamond.standard.smartloan.storage");
     bytes32 constant REENTRANCY_GUARD_STORAGE_POSITION = keccak256("diamond.standard.reentrancy.guard.storage");
     bytes32 constant OWNED_TRADERJOE_V2_BINS_POSITION = keccak256("diamond.standard.traderjoe_v2_bins_1685370112");
     //TODO: maybe we should keep here a tuple[tokenId, factory] to account for multiple Uniswap V3 deployments
-    bytes32 constant OWNED_UNISWAP_V3_TOKEN_IDS_POSITION = keccak256("diamond.standard.uniswap_v3_token_ids_1685370112");
     bytes32 constant WITHDRAWAL_INTENTS_POSITION = keccak256("diamond.standard.withdrawal.intents");
     bytes32 constant PRIME_LEVERAGE_STORAGE_POSITION = keccak256("diamond.standard.prime.leverage.storage");
     // GMX Performance Fee Tracking
@@ -112,11 +113,6 @@ library DiamondStorageLib {
         ITraderJoeV2Facet.TraderJoeV2Bin[] ownedTjV2Bins;
     }
 
-    struct UniswapV3Storage {
-        // UniswapV3 token IDs of the contract
-        uint256[] ownedUniswapV3TokenIds;
-    }
-
     struct LiquidationStorage {
         // Mapping controlling addresses that can execute the liquidation methods
         mapping(address=>bool) canLiquidate;
@@ -131,6 +127,21 @@ library DiamondStorageLib {
         /// @dev dollar-denominated (18 decimals) cumulative slippage loss across pre-liquidation swaps.
         /// Enforced against `debtSnapshotDollars * MAX_CUMULATIVE_LOSS_BPS / 10_000`.
         uint256 cumulativeLossDollars;
+        /// @dev Leverage tier captured when snapshotInsolvency() is called, so the liquidation
+        /// fee cannot be moved by the account owner inside the window. Stored as uint256 rather
+        /// than the enum so the field is a plain slot append: 0 = BASIC, 1 = PREMIUM, matching
+        /// LeverageTierLib.LeverageTier.
+        ///
+        /// A snapshot that was already live when this field shipped reads 0 and is therefore
+        /// charged the BASIC fee. That is deliberate: 0 defaulting to the HIGHER fee is the
+        /// conservative direction, and it keeps the reader a plain lookup. The alternative —
+        /// encoding "not recorded" and falling back to the live tier — would reintroduce
+        /// exactly the live-tier read this snapshot exists to eliminate, on any path that ever
+        /// zeroes the slot.
+        ///
+        /// APPEND ONLY — this struct sits at a keccak slot in diamond storage, so new fields go
+        /// at the end, never in the middle.
+        uint256 leverageTierSnapshot;
     }
 
     struct ReentrancyGuardStorage {
@@ -229,13 +240,6 @@ library DiamondStorageLib {
         bytes32 position = OWNED_TRADERJOE_V2_BINS_POSITION;
         assembly {
             tjv2s.slot := position
-        }
-    }
-
-    function uniswapV3Storage() internal pure returns (UniswapV3Storage storage uv3s) {
-        bytes32 position = OWNED_UNISWAP_V3_TOKEN_IDS_POSITION;
-        assembly {
-            uv3s.slot := position
         }
     }
 
@@ -369,19 +373,6 @@ library DiamondStorageLib {
         bins = new ITraderJoeV2Facet.TraderJoeV2Bin[](tjv2s.ownedTjV2Bins.length);
         for (uint256 i = 0; i < bins.length; i++) {
             bins[i] = tjv2s.ownedTjV2Bins[i];
-        }
-    }
-
-    function getUV3OwnedTokenIds() internal returns(uint256[] storage tokenIds){
-        UniswapV3Storage storage uv3s = uniswapV3Storage();
-        tokenIds = uv3s.ownedUniswapV3TokenIds;
-    }
-
-    function getUV3OwnedTokenIdsView() internal view returns(uint256[] memory tokenIds){
-        UniswapV3Storage storage uv3s = uniswapV3Storage();
-        tokenIds = new uint256[](uv3s.ownedUniswapV3TokenIds.length);
-        for (uint256 i = 0; i < tokenIds.length; i++) {
-            tokenIds[i] = uv3s.ownedUniswapV3TokenIds[i];
         }
     }
 
